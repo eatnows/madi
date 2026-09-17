@@ -10,13 +10,26 @@ type WorktreeInfo = {
   is_main: boolean;
 };
 
+type Segment = { text: string; emphasized: boolean };
+
+type DiffLineTag = "equal" | "delete" | "insert" | "gap";
+
+type DiffLine = {
+  tag: DiffLineTag;
+  old_lineno: number | null;
+  new_lineno: number | null;
+  segments: Segment[];
+  skipped: number | null;
+};
+
 type FileDiff = {
   path: string;
   status: string;
   additions: number;
   deletions: number;
   section: "committed" | "uncommitted";
-  patch: string;
+  binary: boolean;
+  lines: DiffLine[];
 };
 
 type DiffResult = {
@@ -24,6 +37,85 @@ type DiffResult = {
   head_oid: string;
   files: FileDiff[];
 };
+
+type Row = { gap: true } | { gap: false; left: DiffLine | null; right: DiffLine | null };
+
+/** Pairs delete/insert runs side by side so they render as aligned old|new columns. */
+function buildRows(lines: DiffLine[]): Row[] {
+  const rows: Row[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.tag === "gap") {
+      rows.push({ gap: true });
+      i++;
+      continue;
+    }
+    if (line.tag === "equal") {
+      rows.push({ gap: false, left: line, right: line });
+      i++;
+      continue;
+    }
+    const deletes: DiffLine[] = [];
+    while (i < lines.length && lines[i].tag === "delete") deletes.push(lines[i++]);
+    const inserts: DiffLine[] = [];
+    while (i < lines.length && lines[i].tag === "insert") inserts.push(lines[i++]);
+    const max = Math.max(deletes.length, inserts.length);
+    for (let k = 0; k < max; k++) {
+      rows.push({ gap: false, left: deletes[k] ?? null, right: inserts[k] ?? null });
+    }
+  }
+  return rows;
+}
+
+function Cell({ line, side }: { line: DiffLine | null; side: "left" | "right" }) {
+  const lineno = side === "left" ? line?.old_lineno : line?.new_lineno;
+  const bg =
+    line?.tag === "delete" ? "#3a1d1d" : line?.tag === "insert" ? "#1d3a22" : "transparent";
+  return (
+    <>
+      <span className="lineno">{lineno ?? ""}</span>
+      <span className="code" style={{ background: bg }}>
+        {line?.segments.map((s, i) => (
+          <span
+            key={i}
+            style={
+              s.emphasized
+                ? {
+                    background: line.tag === "delete" ? "#6e2b2b" : "#2b6e3a",
+                    borderRadius: 2,
+                  }
+                : undefined
+            }
+          >
+            {s.text}
+          </span>
+        ))}
+      </span>
+    </>
+  );
+}
+
+function SideBySideDiff({ file }: { file: FileDiff }) {
+  if (file.binary) return <p className="diff-note">Binary file, no preview.</p>;
+  const rows = buildRows(file.lines);
+  return (
+    <div className="diff-grid">
+      {rows.map((row, i) =>
+        row.gap ? (
+          <div className="diff-gap" key={i}>
+            ⋯
+          </div>
+        ) : (
+          <div className="diff-row" key={i}>
+            <Cell line={row.left} side="left" />
+            <Cell line={row.right} side="right" />
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
 
 function App() {
   const [repoPath, setRepoPath] = useState("");
@@ -101,7 +193,7 @@ function App() {
         </ul>
 
         {selected && diff && (
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <h2>
               {selected.name} vs {baseBranch}
             </h2>
@@ -114,9 +206,7 @@ function App() {
                 <summary>
                   [{f.section}] {f.status} {f.path} (+{f.additions} -{f.deletions})
                 </summary>
-                <pre style={{ overflowX: "auto", background: "#111", color: "#eee", padding: "0.5rem" }}>
-                  {f.patch}
-                </pre>
+                <SideBySideDiff file={f} />
               </details>
             ))}
           </div>

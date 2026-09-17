@@ -95,6 +95,51 @@ button {
   margin-right: 5px;
 }
 
+.diff-note {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.diff-grid {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+
+.diff-row {
+  display: grid;
+  grid-template-columns: 3em 1fr 3em 1fr;
+}
+
+.diff-row .lineno {
+  text-align: right;
+  padding: 0 0.5em;
+  color: #6e6e6e;
+  user-select: none;
+  border-right: 1px solid #333;
+}
+
+.diff-row .code {
+  padding: 0 0.6em;
+  white-space: pre;
+}
+
+.diff-row .code:nth-child(2) {
+  border-right: 1px solid #333;
+}
+
+.diff-gap {
+  text-align: center;
+  color: #6e6e6e;
+  padding: 2px 0;
+  border-top: 1px dashed #333;
+  border-bottom: 1px dashed #333;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;
