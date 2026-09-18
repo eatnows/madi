@@ -23,11 +23,16 @@
   --rail-active-bg: #1a1b1c;
   --rail-active-fg: #ffffff;
 
-  font-family: "Pretendard Variable", -apple-system, "Segoe UI", sans-serif;
+  font-family: -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
   color: var(--text);
   background-color: var(--bg);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Opt-in via Settings; the font file is only fetched once this attribute is set. */
+:root[data-font="pretendard"] {
+  font-family: "Pretendard Variable", -apple-system, "Segoe UI", sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -354,6 +359,34 @@ select {
 .icon-btn:hover {
   color: var(--text-strong);
   background: var(--panel-bg);
+}
+
+.icon-btn--open {
+  color: var(--text-strong);
+  background: var(--selected-bg);
+}
+
+.settings-popover {
+  right: 0;
+  left: auto;
+  width: 200px;
+  padding: 10px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.settings-select {
+  font-size: 12px;
 }
 
 .main-row {

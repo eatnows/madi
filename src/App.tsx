@@ -400,6 +400,83 @@ function CheckIcon() {
   );
 }
 
+function GearIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="8" r="2.3" />
+      <path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.1 3.9l-1.1 1.1M5 10l-1.1 1.1M12.1 12.1L11 11M5 6L3.9 4.9" />
+    </svg>
+  );
+}
+
+type FontChoice = "system" | "pretendard";
+const FONT_STORAGE_KEY = "worktree-viewer:font";
+
+function loadFontChoice(): FontChoice {
+  try {
+    return localStorage.getItem(FONT_STORAGE_KEY) === "pretendard" ? "pretendard" : "system";
+  } catch {
+    return "system";
+  }
+}
+
+/** Settings popover. Font defaults to the OS system font; picking Pretendard dynamically
+ * imports its (~2MB) variable-font CSS on demand instead of shipping it in the initial load. */
+function SettingsMenu() {
+  const [open, setOpen] = useState(false);
+  const [font, setFont] = useState<FontChoice>(loadFontChoice);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (font === "pretendard") {
+      import("pretendard/dist/web/variable/pretendardvariable.css").then(() => {
+        document.documentElement.dataset.font = "pretendard";
+      });
+    } else {
+      delete document.documentElement.dataset.font;
+    }
+    try {
+      localStorage.setItem(FONT_STORAGE_KEY, font);
+    } catch {
+      // best-effort
+    }
+  }, [font]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [open]);
+
+  return (
+    <div className="searchable-select" ref={rootRef}>
+      <button
+        type="button"
+        className={"icon-btn" + (open ? " icon-btn--open" : "")}
+        onClick={() => setOpen((o) => !o)}
+        title="Settings"
+        aria-label="Settings"
+      >
+        <GearIcon />
+      </button>
+      {open && (
+        <div className="searchable-select-popover settings-popover">
+          <div className="settings-row">
+            <span className="settings-label">Font</span>
+            <select className="settings-select" value={font} onChange={(e) => setFont(e.currentTarget.value as FontChoice)}>
+              <option value="system">System</option>
+              <option value="pretendard">Pretendard</option>
+            </select>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function defaultBranchOf(branches: string[]): string {
   return branches.includes("main") ? "main" : (branches[0] ?? "main");
 }
@@ -611,6 +688,7 @@ function App() {
               <LayoutFocusedIcon />
             </button>
           </div>
+          <SettingsMenu />
         </div>
         {error && <span className="topbar-error">{error}</span>}
       </div>
