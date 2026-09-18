@@ -166,66 +166,49 @@ function buildBranchTree(branches: string[]): BranchTreeNode {
   return root;
 }
 
-function BranchTreeOptions({
-  node,
-  depth,
-  value,
-  onPick,
-}: {
-  node: BranchTreeNode;
-  depth: number;
-  value: string;
-  onPick: (branch: string) => void;
-}) {
+type FlatRow =
+  | { type: "folder"; fullPath: string; segment: string; depth: number }
+  | { type: "option"; fullPath: string; depth: number };
+
+function collectLeaves(node: BranchTreeNode): string[] {
+  const out = node.isBranch ? [node.fullPath] : [];
+  for (const child of node.children.values()) out.push(...collectLeaves(child));
+  return out;
+}
+
+/** Flattens the tree into visible rows, respecting collapsed folders — except while searching,
+ * where every folder on the path to a match is force-expanded so results stay reachable. */
+function flattenBranchTree(
+  node: BranchTreeNode,
+  depth: number,
+  collapsed: Set<string>,
+  query: string,
+): FlatRow[] {
+  const rows: FlatRow[] = [];
   const children = [...node.children.values()].sort((a, b) => a.segment.localeCompare(b.segment));
-  return (
-    <>
-      {children.map((child) => (
-        <div key={child.fullPath}>
-          {child.children.size > 0 ? (
-            <div className="searchable-select-folder" style={{ paddingLeft: 8 + depth * 12 }}>
-              {child.segment}/
-            </div>
-          ) : (
-            <BranchOption fullPath={child.fullPath} depth={depth} value={value} onPick={onPick} />
-          )}
-          {child.children.size > 0 && (
-            <BranchTreeOptions node={child} depth={depth + 1} value={value} onPick={onPick} />
-          )}
-          {child.children.size > 0 && child.isBranch && (
-            <BranchOption fullPath={child.fullPath} depth={depth + 1} value={value} onPick={onPick} />
-          )}
-        </div>
-      ))}
-    </>
-  );
+  for (const child of children) {
+    const isFolder = child.children.size > 0;
+    if (query) {
+      const hasMatch = collectLeaves(child).some((b) => b.toLowerCase().includes(query.toLowerCase()));
+      if (!hasMatch) continue;
+    }
+    if (isFolder) {
+      rows.push({ type: "folder", fullPath: child.fullPath, segment: child.segment, depth });
+      if (query || !collapsed.has(child.fullPath)) {
+        rows.push(...flattenBranchTree(child, depth + 1, collapsed, query));
+        if (child.isBranch && child.fullPath.toLowerCase().includes(query.toLowerCase())) {
+          rows.push({ type: "option", fullPath: child.fullPath, depth: depth + 1 });
+        }
+      }
+    } else {
+      rows.push({ type: "option", fullPath: child.fullPath, depth });
+    }
+  }
+  return rows;
 }
 
-function BranchOption({
-  fullPath,
-  depth,
-  value,
-  onPick,
-}: {
-  fullPath: string;
-  depth: number;
-  value: string;
-  onPick: (branch: string) => void;
-}) {
-  const label = fullPath.split("/").pop();
-  return (
-    <div
-      className={"searchable-select-option" + (fullPath === value ? " searchable-select-option--selected" : "")}
-      style={{ paddingLeft: 8 + depth * 12 }}
-      onClick={() => onPick(fullPath)}
-    >
-      {label}
-    </div>
-  );
-}
-
-/** A branch picker with search-to-filter and "/"-prefix folder grouping — a native <select>
- * can't scroll-search or group, and this repo's branch lists can get long. */
+/** A branch picker with search-to-filter, "/"-prefix folder grouping (collapsible, preserved
+ * while searching), and arrow-key navigation — a native <select> can't scroll-search or group. */
 function BranchPicker({
   value,
   branches,
@@ -237,30 +220,64 @@ function BranchPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [highlighted, setHighlighted] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const rows = flattenBranchTree(buildBranchTree(branches), 0, collapsed, query);
+  const optionPaths = rows.filter((r) => r.type === "option").map((r) => r.fullPath);
 
   useEffect(() => {
     if (!open) return;
     function onDocMouseDown(e: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
     document.addEventListener("mousedown", onDocMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onDocMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const idx = optionPaths.indexOf(value);
+    setHighlighted(idx >= 0 ? idx : 0);
+    // Re-run only when the popover opens or the query changes the candidate set, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, query]);
+
+  useEffect(() => {
+    listRef.current?.querySelector(`[data-option-index="${highlighted}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [highlighted]);
 
   function pick(branch: string) {
     onChange(branch);
     setOpen(false);
   }
 
-  const filtered = query ? branches.filter((b) => b.toLowerCase().includes(query.toLowerCase())) : null;
+  function toggleFolder(path: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  function onSearchKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Escape") {
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlighted((i) => Math.min(i + 1, optionPaths.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlighted((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      if (optionPaths[highlighted]) pick(optionPaths[highlighted]);
+    }
+  }
+
+  let optionIndex = -1;
 
   return (
     <div className="searchable-select" ref={rootRef}>
@@ -283,20 +300,49 @@ function BranchPicker({
             placeholder="Search branches…"
             value={query}
             onChange={(e) => setQuery(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && filtered && filtered.length > 0) pick(filtered[0]);
-            }}
+            onKeyDown={onSearchKeyDown}
           />
-          <div className="searchable-select-list">
-            {filtered ? (
-              filtered.length === 0 ? (
-                <div className="searchable-select-empty">No matches</div>
-              ) : (
-                filtered.map((b) => <BranchOption key={b} fullPath={b} depth={0} value={value} onPick={pick} />)
-              )
-            ) : (
-              <BranchTreeOptions node={buildBranchTree(branches)} depth={0} value={value} onPick={pick} />
-            )}
+          <div className="searchable-select-list" ref={listRef}>
+            {rows.length === 0 && <div className="searchable-select-empty">No matches</div>}
+            {rows.map((row) => {
+              if (row.type === "folder") {
+                const isCollapsed = !query && collapsed.has(row.fullPath);
+                return (
+                  <div
+                    key={row.fullPath}
+                    className="searchable-select-folder"
+                    style={{ paddingLeft: 4 + row.depth * 14 }}
+                    onClick={() => toggleFolder(row.fullPath)}
+                  >
+                    <span className={"searchable-select-chevron" + (isCollapsed ? "" : " searchable-select-chevron--open")}>
+                      <ChevronDownIcon />
+                    </span>
+                    <FolderIcon />
+                    {row.segment}
+                  </div>
+                );
+              }
+              optionIndex++;
+              const index = optionIndex;
+              const selected = row.fullPath === value;
+              return (
+                <div
+                  key={row.fullPath}
+                  data-option-index={index}
+                  className={
+                    "searchable-select-option" +
+                    (selected ? " searchable-select-option--selected" : "") +
+                    (index === highlighted ? " searchable-select-option--highlighted" : "")
+                  }
+                  style={{ paddingLeft: 8 + row.depth * 14 }}
+                  onMouseEnter={() => setHighlighted(index)}
+                  onClick={() => pick(row.fullPath)}
+                >
+                  <span className="searchable-select-option-label">{row.fullPath.split("/").pop()}</span>
+                  {selected && <CheckIcon />}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -334,6 +380,22 @@ function ChevronDownIcon() {
   return (
     <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 6l4 4 4-4" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+      <path d="M2 4.5a1 1 0 0 1 1-1h3l1.3 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3.5 8.5l3 3 6-7" />
     </svg>
   );
 }
