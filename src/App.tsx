@@ -420,12 +420,13 @@ function loadFontChoice(): FontChoice {
   }
 }
 
-/** Settings popover. Font defaults to the OS system font; picking Pretendard dynamically
- * imports its (~2MB) variable-font CSS on demand instead of shipping it in the initial load. */
-function SettingsMenu() {
-  const [open, setOpen] = useState(false);
+type SettingsTab = "general";
+
+/** Settings modal, opened via the gear icon or Cmd/Ctrl+, (the OS-standard preferences
+ * shortcut). Tabbed on the left for when more sections show up; only "General" exists today. */
+function SettingsModal({ onClose }: { onClose: () => void }) {
+  const [tab, setTab] = useState<SettingsTab>("general");
   const [font, setFont] = useState<FontChoice>(loadFontChoice);
-  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (font === "pretendard") {
@@ -443,36 +444,37 @@ function SettingsMenu() {
   }, [font]);
 
   useEffect(() => {
-    if (!open) return;
-    function onDocMouseDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
     }
-    document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [open]);
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
   return (
-    <div className="searchable-select" ref={rootRef}>
-      <button
-        type="button"
-        className={"icon-btn" + (open ? " icon-btn--open" : "")}
-        onClick={() => setOpen((o) => !o)}
-        title="Settings"
-        aria-label="Settings"
-      >
-        <GearIcon />
-      </button>
-      {open && (
-        <div className="searchable-select-popover settings-popover">
-          <div className="settings-row">
-            <span className="settings-label">Font</span>
-            <select className="settings-select" value={font} onChange={(e) => setFont(e.currentTarget.value as FontChoice)}>
-              <option value="system">System</option>
-              <option value="pretendard">Pretendard</option>
-            </select>
-          </div>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-tabs">
+          <button
+            type="button"
+            className={"settings-tab" + (tab === "general" ? " settings-tab--active" : "")}
+            onClick={() => setTab("general")}
+          >
+            General
+          </button>
         </div>
-      )}
+        <div className="settings-content">
+          {tab === "general" && (
+            <div className="settings-row">
+              <span className="settings-label">Font</span>
+              <select className="settings-select" value={font} onChange={(e) => setFont(e.currentTarget.value as FontChoice)}>
+                <option value="system">System</option>
+                <option value="pretendard">Pretendard</option>
+              </select>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -518,6 +520,18 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("sidebar");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; worktree: WorktreeInfo } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
   const [filePanelWidth, setFilePanelWidth] = useState(260);
@@ -688,10 +702,20 @@ function App() {
               <LayoutFocusedIcon />
             </button>
           </div>
-          <SettingsMenu />
+          <button
+            type="button"
+            className={"icon-btn" + (settingsOpen ? " icon-btn--open" : "")}
+            onClick={() => setSettingsOpen(true)}
+            title="Settings (⌘,)"
+            aria-label="Settings"
+          >
+            <GearIcon />
+          </button>
         </div>
         {error && <span className="topbar-error">{error}</span>}
       </div>
+
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
       {viewMode === "sidebar" ? (
         <div className="main-row">
