@@ -139,6 +139,32 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function RefreshIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+      <path d="M13.5 2.5v3.5H10" />
+    </svg>
+  );
+}
+
+function LayoutSidebarIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+      <path d="M5.5 2.5v11" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function LayoutFocusedIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+    </svg>
+  );
+}
+
 function defaultBranchOf(branches: string[]): string {
   return branches.includes("main") ? "main" : (branches[0] ?? "main");
 }
@@ -303,8 +329,8 @@ function App() {
         </div>
         <div className="topbar-right">
           {repoPath && (
-            <button type="button" onClick={rescan}>
-              Rescan
+            <button type="button" className="icon-btn" onClick={rescan} title="Rescan" aria-label="Rescan">
+              <RefreshIcon />
             </button>
           )}
           <div className="view-toggle">
@@ -312,15 +338,19 @@ function App() {
               type="button"
               className={"view-toggle-btn" + (viewMode === "sidebar" ? " view-toggle-btn--active" : "")}
               onClick={() => setViewMode("sidebar")}
+              title="Sidebar layout"
+              aria-label="Sidebar layout"
             >
-              Sidebar
+              <LayoutSidebarIcon />
             </button>
             <button
               type="button"
               className={"view-toggle-btn" + (viewMode === "focused" ? " view-toggle-btn--active" : "")}
               onClick={() => setViewMode("focused")}
+              title="Focused layout"
+              aria-label="Focused layout"
             >
-              Focused
+              <LayoutFocusedIcon />
             </button>
           </div>
         </div>

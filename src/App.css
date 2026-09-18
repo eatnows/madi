@@ -168,8 +168,11 @@ select {
 }
 
 .view-toggle-btn {
+  display: flex;
+  align-items: center;
   border: none;
   border-radius: 0;
+  padding: 5px 8px;
   background: transparent;
   color: var(--text-dim);
 }
@@ -177,6 +180,19 @@ select {
 .view-toggle-btn--active {
   background: var(--selected-bg);
   color: var(--text-strong);
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  color: var(--text-dim);
+}
+
+.icon-btn:hover {
+  color: var(--text-strong);
+  background: var(--panel-bg);
 }
 
 .main-row {
