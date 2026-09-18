@@ -147,6 +147,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("sidebar");
+  const [editingConfig, setEditingConfig] = useState(true);
 
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
   const [filePanelWidth, setFilePanelWidth] = useState(260);
@@ -188,42 +189,73 @@ function App() {
   return (
     <div className="app-shell">
       <div className="topbar">
-        <form
-          className="topbar-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            loadWorktrees();
-          }}
-        >
-          <input
-            className="topbar-input"
-            value={repoPath}
-            onChange={(e) => setRepoPath(e.currentTarget.value)}
-            placeholder="/path/to/repo"
-          />
-          <input
-            className="topbar-input topbar-branch"
-            value={baseBranch}
-            onChange={(e) => setBaseBranch(e.currentTarget.value)}
-            placeholder="base branch"
-          />
-          <button type="submit">Rescan</button>
-        </form>
-        <div className="view-toggle">
+        {editingConfig ? (
+          <form
+            className="topbar-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              loadWorktrees();
+              setEditingConfig(false);
+            }}
+          >
+            <input
+              className="topbar-input"
+              value={repoPath}
+              onChange={(e) => setRepoPath(e.currentTarget.value)}
+              placeholder="/path/to/repo"
+              autoFocus
+            />
+            <input
+              className="topbar-input topbar-branch"
+              value={baseBranch}
+              onChange={(e) => setBaseBranch(e.currentTarget.value)}
+              placeholder="base branch"
+            />
+            <button type="submit">Scan</button>
+          </form>
+        ) : (
           <button
             type="button"
-            className={"view-toggle-btn" + (viewMode === "sidebar" ? " view-toggle-btn--active" : "")}
-            onClick={() => setViewMode("sidebar")}
+            className="breadcrumb"
+            onClick={() => setEditingConfig(true)}
+            title="Click to change project path or base branch"
           >
-            Sidebar
+            <span className="breadcrumb-brand">worktree-viewer</span>
+            <span className="breadcrumb-sep">/</span>
+            <span>{projectName}</span>
+            {selectedWorktree && (
+              <>
+                <span className="breadcrumb-sep">/</span>
+                <span>{selectedWorktree.branch ?? selectedWorktree.name}</span>
+              </>
+            )}
           </button>
-          <button
-            type="button"
-            className={"view-toggle-btn" + (viewMode === "focused" ? " view-toggle-btn--active" : "")}
-            onClick={() => setViewMode("focused")}
-          >
-            Focused
-          </button>
+        )}
+        <div className="topbar-right">
+          {!editingConfig && (
+            <>
+              <span className="topbar-base">base: {baseBranch}</span>
+              <button type="button" onClick={loadWorktrees}>
+                Rescan
+              </button>
+            </>
+          )}
+          <div className="view-toggle">
+            <button
+              type="button"
+              className={"view-toggle-btn" + (viewMode === "sidebar" ? " view-toggle-btn--active" : "")}
+              onClick={() => setViewMode("sidebar")}
+            >
+              Sidebar
+            </button>
+            <button
+              type="button"
+              className={"view-toggle-btn" + (viewMode === "focused" ? " view-toggle-btn--active" : "")}
+              onClick={() => setViewMode("focused")}
+            >
+              Focused
+            </button>
+          </div>
         </div>
         {error && <span className="topbar-error">{error}</span>}
       </div>
