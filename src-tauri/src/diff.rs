@@ -241,6 +241,33 @@ pub fn diff_against_base(
     })
 }
 
+/// Diffs a single commit against its first parent (or an empty tree, for a root commit), for
+/// showing "what changed in this commit" in the git log/graph view.
+#[tauri::command]
+pub fn diff_commit(repo_path: String, oid: String) -> Result<Vec<FileDiff>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
+    let commit_oid = git2::Oid::from_str(&oid).map_err(|e| e.to_string())?;
+    let commit = repo.find_commit(commit_oid).map_err(|e| e.to_string())?;
+    let new_tree = commit.tree().map_err(|e| e.to_string())?;
+
+    let parent_tree = match commit.parents().next() {
+        Some(parent) => parent.tree().map_err(|e| e.to_string())?,
+        None => {
+            let empty_oid = repo
+                .treebuilder(None)
+                .and_then(|b| b.write())
+                .map_err(|e| e.to_string())?;
+            repo.find_tree(empty_oid).map_err(|e| e.to_string())?
+        }
+    };
+
+    let diff = repo
+        .diff_tree_to_tree(Some(&parent_tree), Some(&new_tree), None)
+        .map_err(|e| e.to_string())?;
+
+    Ok(collect_committed(&diff, &repo, &parent_tree, &new_tree))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

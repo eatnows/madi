@@ -47,6 +47,7 @@ type CommitInfo = {
   oid: string;
   short_oid: string;
   summary: string;
+  body: string;
   author_name: string;
   author_email: string;
   timestamp: number;
@@ -265,74 +266,78 @@ function formatRelativeTime(timestampSeconds: number): string {
   return `${Math.round(months / 12)}y ago`;
 }
 
+/** A thin visible stroke has a hit area too small to hover reliably, and at busy convergence
+ * points the old "hover the whole row" approach highlighted the row's own lane no matter which
+ * line the cursor was actually over. Each segment now gets its own wide, invisible, transparent
+ * twin purely for hit-testing (`pointerEvents="stroke"` so only the drawn path counts, not its
+ * bounding box), so hovering highlights exactly the line under the cursor. */
 function GraphLane({
   row,
   laneCount,
   hoveredLane,
+  onHoverLane,
 }: {
   row: GraphRow;
   laneCount: number;
   hoveredLane: number | null;
+  onHoverLane: (lane: number | null) => void;
 }) {
   const width = laneCount * LANE_WIDTH + LANE_X0;
   const x = (lane: number) => LANE_X0 + lane * LANE_WIDTH;
   const opacity = (...lanes: number[]) => (hoveredLane === null || lanes.includes(hoveredLane) ? 1 : 0.22);
+  const hitProps = (lane: number) => ({
+    stroke: "transparent",
+    strokeWidth: 10,
+    pointerEvents: "stroke" as const,
+    onMouseEnter: () => onHoverLane(lane),
+    onMouseLeave: () => onHoverLane(null),
+  });
   return (
     <svg width={width} height={36} className="graph-lane">
       {row.passThrough.map((lane) => (
-        <line
-          key={`p${lane}`}
-          x1={x(lane)}
-          y1={0}
-          x2={x(lane)}
-          y2={36}
-          stroke={laneColor(lane)}
-          strokeWidth={2}
-          opacity={opacity(lane)}
-        />
+        <g key={`p${lane}`}>
+          <line x1={x(lane)} y1={0} x2={x(lane)} y2={36} stroke={laneColor(lane)} strokeWidth={2} opacity={opacity(lane)} pointerEvents="none" />
+          <line x1={x(lane)} y1={0} x2={x(lane)} y2={36} {...hitProps(lane)} />
+        </g>
       ))}
       {/* incoming line from above, unless this lane just started at this row */}
-      <line
-        x1={x(row.lane)}
-        y1={0}
-        x2={x(row.lane)}
-        y2={18}
-        stroke={laneColor(row.lane)}
-        strokeWidth={2}
-        opacity={opacity(row.lane)}
-      />
+      <g>
+        <line x1={x(row.lane)} y1={0} x2={x(row.lane)} y2={18} stroke={laneColor(row.lane)} strokeWidth={2} opacity={opacity(row.lane)} pointerEvents="none" />
+        <line x1={x(row.lane)} y1={0} x2={x(row.lane)} y2={18} {...hitProps(row.lane)} />
+      </g>
       {row.continues && (
-        <line
-          x1={x(row.lane)}
-          y1={18}
-          x2={x(row.lane)}
-          y2={36}
-          stroke={laneColor(row.lane)}
-          strokeWidth={2}
-          opacity={opacity(row.lane)}
-        />
+        <g>
+          <line x1={x(row.lane)} y1={18} x2={x(row.lane)} y2={36} stroke={laneColor(row.lane)} strokeWidth={2} opacity={opacity(row.lane)} pointerEvents="none" />
+          <line x1={x(row.lane)} y1={18} x2={x(row.lane)} y2={36} {...hitProps(row.lane)} />
+        </g>
       )}
-      {row.convergeFrom.map((lane) => (
-        <path
-          key={`c${lane}`}
-          d={`M ${x(lane)} 0 C ${x(lane)} 10, ${x(row.lane)} 8, ${x(row.lane)} 18`}
-          stroke={laneColor(lane)}
-          strokeWidth={2}
-          fill="none"
-          opacity={opacity(lane, row.lane)}
-        />
-      ))}
-      {row.divergeTo.map((lane) => (
-        <path
-          key={`d${lane}`}
-          d={`M ${x(row.lane)} 18 C ${x(row.lane)} 28, ${x(lane)} 26, ${x(lane)} 36`}
-          stroke={laneColor(lane)}
-          strokeWidth={2}
-          fill="none"
-          opacity={opacity(lane, row.lane)}
-        />
-      ))}
+      {row.convergeFrom.map((lane) => {
+        const d = `M ${x(lane)} 0 C ${x(lane)} 10, ${x(row.lane)} 8, ${x(row.lane)} 18`;
+        return (
+          <g key={`c${lane}`}>
+            <path d={d} stroke={laneColor(lane)} strokeWidth={2} fill="none" opacity={opacity(lane, row.lane)} pointerEvents="none" />
+            <path d={d} fill="none" {...hitProps(lane)} />
+          </g>
+        );
+      })}
+      {row.divergeTo.map((lane) => {
+        const d = `M ${x(row.lane)} 18 C ${x(row.lane)} 28, ${x(lane)} 26, ${x(lane)} 36`;
+        return (
+          <g key={`d${lane}`}>
+            <path d={d} stroke={laneColor(lane)} strokeWidth={2} fill="none" opacity={opacity(lane, row.lane)} pointerEvents="none" />
+            <path d={d} fill="none" {...hitProps(lane)} />
+          </g>
+        );
+      })}
       <circle cx={x(row.lane)} cy={18} r={5} fill={laneColor(row.lane)} opacity={opacity(row.lane)} />
+      <circle
+        cx={x(row.lane)}
+        cy={18}
+        r={8}
+        fill="transparent"
+        onMouseEnter={() => onHoverLane(row.lane)}
+        onMouseLeave={() => onHoverLane(null)}
+      />
     </svg>
   );
 }
@@ -882,10 +887,17 @@ function App() {
   }, []);
 
   // The git panel's branch tracks the selected worktree by default; a manual pick in the panel
-  // (which flips followWorktree off) breaks that link until another worktree is clicked.
+  // (which flips followWorktree off) breaks that link until another worktree is clicked. With no
+  // worktree selected (just a project), fall back to "main" (or the repo's first branch) so the
+  // graph isn't stuck empty.
   useEffect(() => {
-    if (followWorktree && selectedWorktree?.branch) setGraphBranch(selectedWorktree.branch);
-  }, [followWorktree, selectedWorktree]);
+    if (!followWorktree) return;
+    if (selectedWorktree?.branch) {
+      setGraphBranch(selectedWorktree.branch);
+    } else if (branches.length > 0) {
+      setGraphBranch(branches.includes("main") ? "main" : branches[0]);
+    }
+  }, [followWorktree, selectedWorktree, branches]);
 
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
   const [filePanelWidth, setFilePanelWidth] = useState(260);
@@ -1353,6 +1365,12 @@ function GitPanel({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredLane, setHoveredLane] = useState<number | null>(null);
+  const [selectedOid, setSelectedOid] = useState<string | null>(null);
+  const [commitFiles, setCommitFiles] = useState<FileDiff[] | null>(null);
+  const [commitFilesError, setCommitFilesError] = useState<string | null>(null);
+  const [selectedCommitFile, setSelectedCommitFile] = useState<FileDiff | null>(null);
+  const [graphPaneWidth, setGraphPaneWidth] = useState(460);
+  const [commitFileListWidth, setCommitFileListWidth] = useState(220);
   // Synchronous in-flight guard: `loadingMore` state can't prevent a second call fired before
   // React re-renders with the state update, since both reads would still see the stale `false`.
   const fetchingRef = useRef(false);
@@ -1361,6 +1379,9 @@ function GitPanel({
     setCommits([]);
     setHasMore(true);
     setError(null);
+    setSelectedOid(null);
+    setCommitFiles(null);
+    setSelectedCommitFile(null);
     if (!branch) return;
     fetchingRef.current = true;
     invoke<CommitInfo[]>("git_log", { repoPath, branch, skip: 0, limit: GRAPH_PAGE_SIZE })
@@ -1395,10 +1416,24 @@ function GitPanel({
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) loadMore();
   }
 
+  function selectCommit(oid: string) {
+    setSelectedOid(oid);
+    setCommitFiles(null);
+    setCommitFilesError(null);
+    setSelectedCommitFile(null);
+    invoke<FileDiff[]>("diff_commit", { repoPath, oid })
+      .then((files) => {
+        setCommitFiles(files);
+        setSelectedCommitFile(files[0] ?? null);
+      })
+      .catch((e) => setCommitFilesError(String(e)));
+  }
+
   const rows = computeGraphRows(commits);
   // Shared across every row so the lane columns line up instead of each row sizing itself to
   // its own local lane count (which made the message/author/date columns jitter left-right).
   const laneCount = rows.reduce((max, r) => Math.max(max, r.maxLane + 1), 1);
+  const selectedCommit = selectedOid ? commits.find((c) => c.oid === selectedOid) ?? null : null;
 
   return (
     <div className="bottom-panel" style={{ height }}>
@@ -1417,27 +1452,74 @@ function GitPanel({
           <CloseIcon />
         </button>
       </div>
-      <div className="graph-area" onScroll={onGraphScroll}>
-        {error && <p className="diff-note">{error}</p>}
-        {!error && !branch && <p className="diff-note">Select a worktree to see its history.</p>}
-        {rows.map((row) => (
-          <div
-            className="graph-row"
-            key={row.commit.oid}
-            onMouseEnter={() => setHoveredLane(row.lane)}
-            onMouseLeave={() => setHoveredLane(null)}
-          >
-            <GraphLane row={row} laneCount={laneCount} hoveredLane={hoveredLane} />
-            <div className="graph-msg">{row.commit.summary}</div>
-            <div className="graph-author">
-              <span className="avatar" style={{ background: laneColor(row.lane) }} />
-              {row.commit.author_name}
-            </div>
-            <div className="graph-date">{formatRelativeTime(row.commit.timestamp)}</div>
-            <div className="graph-hash num">{row.commit.short_oid}</div>
+      <div className="bottom-panel-body">
+        <div className="graph-pane" style={{ width: graphPaneWidth }}>
+          <div className="graph-area" onScroll={onGraphScroll}>
+            {error && <p className="diff-note">{error}</p>}
+            {!error && !branch && <p className="diff-note">Select a worktree to see its history.</p>}
+            {rows.map((row) => (
+              <div
+                className={"graph-row" + (row.commit.oid === selectedOid ? " graph-row--selected" : "")}
+                key={row.commit.oid}
+                onClick={() => selectCommit(row.commit.oid)}
+              >
+                <GraphLane row={row} laneCount={laneCount} hoveredLane={hoveredLane} onHoverLane={setHoveredLane} />
+                <div className="graph-msg">{row.commit.summary}</div>
+                <div className="graph-author">
+                  <span className="avatar" style={{ background: laneColor(row.lane) }} />
+                  {row.commit.author_name}
+                </div>
+                <div className="graph-date">{formatRelativeTime(row.commit.timestamp)}</div>
+                <div className="graph-hash num">{row.commit.short_oid}</div>
+              </div>
+            ))}
+            {loadingMore && <p className="diff-note graph-loading-more">Loading more…</p>}
           </div>
-        ))}
-        {loadingMore && <p className="diff-note graph-loading-more">Loading more…</p>}
+          <div className="commit-message-detail">
+            {selectedCommit ? (
+              <>
+                <div className="commit-message-summary">{selectedCommit.summary}</div>
+                {selectedCommit.body.trim() && <pre className="commit-message-body">{selectedCommit.body.trim()}</pre>}
+                <div className="commit-message-meta">
+                  {selectedCommit.author_name} &lt;{selectedCommit.author_email}&gt; ·{" "}
+                  {new Date(selectedCommit.timestamp * 1000).toLocaleString()} ·{" "}
+                  <span className="num">{selectedCommit.oid}</span>
+                </div>
+              </>
+            ) : (
+              <p className="diff-note">Select a commit to see its full message.</p>
+            )}
+          </div>
+        </div>
+
+        <Resizer onResize={(dx) => setGraphPaneWidth((w) => clamp(w + dx, 300, 800))} />
+
+        {!selectedOid ? (
+          <div className="panel diff-panel">
+            <p className="diff-note">Select a commit to see its changed files.</p>
+          </div>
+        ) : (
+          <>
+            <div className="panel file-panel" style={{ width: commitFileListWidth }}>
+              <div className="panel-body">
+                {commitFilesError && <p className="diff-note">{commitFilesError}</p>}
+                {commitFiles?.length === 0 && <p className="diff-note">No file changes.</p>}
+                {commitFiles?.map((f) => (
+                  <FileRow
+                    key={f.path}
+                    file={f}
+                    selected={selectedCommitFile === f}
+                    onClick={() => setSelectedCommitFile(f)}
+                  />
+                ))}
+              </div>
+            </div>
+            <Resizer onResize={(dx) => setCommitFileListWidth((w) => clamp(w + dx, 160, 400))} />
+            <div className="panel diff-panel">
+              <DiffView file={selectedCommitFile} />
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

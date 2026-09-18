@@ -6,6 +6,8 @@ pub struct CommitInfo {
     pub oid: String,
     pub short_oid: String,
     pub summary: String,
+    /// The commit message body (everything after the summary line), for showing full detail.
+    pub body: String,
     pub author_name: String,
     pub author_email: String,
     /// Seconds since the Unix epoch (author time), for the frontend to format as "2 hours ago".
@@ -43,6 +45,7 @@ pub fn git_log(repo_path: String, branch: String, skip: usize, limit: usize) -> 
             short_oid: oid_str[..7.min(oid_str.len())].to_string(),
             oid: oid_str,
             summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
+            body: commit.body().ok().flatten().unwrap_or("").to_string(),
             author_name: author.name().unwrap_or("").to_string(),
             author_email: author.email().unwrap_or("").to_string(),
             timestamp: commit.time().seconds(),

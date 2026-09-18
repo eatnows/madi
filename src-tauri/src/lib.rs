@@ -12,6 +12,7 @@ pub fn run() {
             worktree::list_branches,
             worktree::remove_worktree,
             diff::diff_against_base,
+            diff::diff_commit,
             git_log::git_log
         ])
         .run(tauri::generate_context!())
