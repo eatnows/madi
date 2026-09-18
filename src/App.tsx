@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -70,24 +70,14 @@ function buildRows(lines: DiffLine[]): Row[] {
 
 function Cell({ line, side }: { line: DiffLine | null; side: "left" | "right" }) {
   const lineno = side === "left" ? line?.old_lineno : line?.new_lineno;
-  const bg =
-    line?.tag === "delete" ? "#3a1d1d" : line?.tag === "insert" ? "#1d3a22" : "transparent";
+  const linenoClass = line ? `lineno lineno--${line.tag}` : "lineno";
+  const tagClass = line ? `diff-cell diff-cell--${line.tag}` : "diff-cell";
   return (
     <>
-      <span className="lineno">{lineno ?? ""}</span>
-      <span className="code" style={{ background: bg }}>
+      <span className={linenoClass}>{lineno ?? ""}</span>
+      <span className={tagClass}>
         {line?.segments.map((s, i) => (
-          <span
-            key={i}
-            style={
-              s.emphasized
-                ? {
-                    background: line.tag === "delete" ? "#6e2b2b" : "#2b6e3a",
-                    borderRadius: 2,
-                  }
-                : undefined
-            }
-          >
+          <span key={i} className={s.emphasized ? "diff-emphasis" : undefined}>
             {s.text}
           </span>
         ))}
@@ -104,7 +94,7 @@ function SideBySideDiff({ file }: { file: FileDiff }) {
       {rows.map((row, i) =>
         row.gap ? (
           <div className="diff-gap" key={i}>
-            ⋯
+            ⋯ unchanged ⋯
           </div>
         ) : (
           <div className="diff-row" key={i}>
@@ -117,18 +107,52 @@ function SideBySideDiff({ file }: { file: FileDiff }) {
   );
 }
 
+/** Drag handle between two panels; reports the delta in px while dragging. */
+function Resizer({ onResize }: { onResize: (deltaX: number) => void }) {
+  const dragging = useRef(false);
+  const lastX = useRef(0);
+
+  function onMouseDown(e: React.MouseEvent) {
+    dragging.current = true;
+    lastX.current = e.clientX;
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      onResize(ev.clientX - lastX.current);
+      lastX.current = ev.clientX;
+    };
+    const onMouseUp = () => {
+      dragging.current = false;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  return <div className="resizer" onMouseDown={onMouseDown} />;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function App() {
   const [repoPath, setRepoPath] = useState("");
   const [baseBranch, setBaseBranch] = useState("main");
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
-  const [selected, setSelected] = useState<WorktreeInfo | null>(null);
+  const [selectedWorktree, setSelectedWorktree] = useState<WorktreeInfo | null>(null);
   const [diff, setDiff] = useState<DiffResult | null>(null);
+  const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
+  const [filePanelWidth, setFilePanelWidth] = useState(260);
 
   async function loadWorktrees() {
     setError(null);
     setDiff(null);
-    setSelected(null);
+    setSelectedWorktree(null);
+    setSelectedFile(null);
     try {
       setWorktrees(await invoke<WorktreeInfo[]>("list_worktrees", { repoPath }));
     } catch (e) {
@@ -138,81 +162,139 @@ function App() {
   }
 
   async function selectWorktree(wt: WorktreeInfo) {
-    setSelected(wt);
+    setSelectedWorktree(wt);
     setDiff(null);
+    setSelectedFile(null);
     setError(null);
     try {
-      setDiff(
-        await invoke<DiffResult>("diff_against_base", {
-          worktreePath: wt.path,
-          baseBranch,
-        }),
-      );
+      const result = await invoke<DiffResult>("diff_against_base", {
+        worktreePath: wt.path,
+        baseBranch,
+      });
+      setDiff(result);
+      setSelectedFile(result.files[0] ?? null);
     } catch (e) {
       setError(String(e));
     }
   }
 
+  const projectName = repoPath.split("/").filter(Boolean).pop() ?? "";
+  const committedFiles = diff?.files.filter((f) => f.section === "committed") ?? [];
+  const uncommittedFiles = diff?.files.filter((f) => f.section === "uncommitted") ?? [];
+
   return (
-    <main className="container">
-      <h1>Worktrees</h1>
+    <div className="app-shell">
+      <div className="topbar">
+        <form
+          className="topbar-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            loadWorktrees();
+          }}
+        >
+          <input
+            value={repoPath}
+            onChange={(e) => setRepoPath(e.currentTarget.value)}
+            placeholder="/path/to/repo"
+          />
+          <input
+            value={baseBranch}
+            onChange={(e) => setBaseBranch(e.currentTarget.value)}
+            placeholder="base branch"
+            className="topbar-branch"
+          />
+          <button type="submit">Rescan</button>
+        </form>
+        {error && <span className="topbar-error">{error}</span>}
+      </div>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          loadWorktrees();
-        }}
-      >
-        <input
-          value={repoPath}
-          onChange={(e) => setRepoPath(e.currentTarget.value)}
-          placeholder="/path/to/repo"
-        />
-        <input
-          value={baseBranch}
-          onChange={(e) => setBaseBranch(e.currentTarget.value)}
-          placeholder="base branch"
-          style={{ maxWidth: 120 }}
-        />
-        <button type="submit">Scan</button>
-      </form>
+      <div className="main-row">
+        <div className="rail">
+          {projectName && <div className="rail-tile rail-tile--active">{projectName[0]?.toUpperCase()}</div>}
+          <div className="rail-tile rail-tile--add" title="Multiple projects: not wired up yet">
+            +
+          </div>
+        </div>
 
-      {error && <p style={{ color: "red" }}>{error}</p>}
-
-      <div style={{ display: "flex", gap: "2rem", textAlign: "left" }}>
-        <ul style={{ minWidth: 260 }}>
-          {worktrees.map((wt) => (
-            <li key={wt.path}>
-              <button onClick={() => selectWorktree(wt)}>
-                <strong>{wt.name}</strong>
-                {wt.is_main && " (main)"} — {wt.branch ?? "(detached)"}
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        {selected && diff && (
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <h2>
-              {selected.name} vs {baseBranch}
-            </h2>
-            <p>
-              merge-base {diff.merge_base_oid.slice(0, 7)} .. HEAD {diff.head_oid.slice(0, 7)}
-            </p>
-            {diff.files.length === 0 && <p>No differences.</p>}
-            {diff.files.map((f) => (
-              <details key={`${f.section}-${f.path}`} open>
-                <summary>
-                  [{f.section}] {f.status} {f.path} (+{f.additions} -{f.deletions})
-                </summary>
-                <SideBySideDiff file={f} />
-              </details>
+        <div className="panel worktree-panel" style={{ width: worktreePanelWidth }}>
+          <div className="panel-header">
+            <div className="panel-title">{projectName || "No project"}</div>
+            <div className="panel-subtitle">Worktrees</div>
+          </div>
+          <div className="panel-body">
+            {worktrees.map((wt) => (
+              <div
+                key={wt.path}
+                className={
+                  "list-row" + (selectedWorktree?.path === wt.path ? " list-row--selected" : "")
+                }
+                onClick={() => selectWorktree(wt)}
+              >
+                <div className="list-row-title">{wt.name}</div>
+                <div className="list-row-sub">{wt.branch ?? "(detached)"}</div>
+              </div>
             ))}
           </div>
-        )}
+        </div>
+
+        <Resizer onResize={(dx) => setWorktreePanelWidth((w) => clamp(w + dx, 180, 420))} />
+
+        <div className="panel file-panel" style={{ width: filePanelWidth }}>
+          {selectedWorktree && diff && (
+            <>
+              <div className="panel-header">
+                <div className="panel-title">{selectedWorktree.name}</div>
+                <div className="panel-subtitle">vs {baseBranch}</div>
+              </div>
+              <div className="panel-body">
+                {committedFiles.length > 0 && (
+                  <div className="file-section-label">COMMITTED · {committedFiles.length}</div>
+                )}
+                {committedFiles.map((f) => (
+                  <FileRow key={f.path} file={f} selected={selectedFile === f} onClick={() => setSelectedFile(f)} />
+                ))}
+                {uncommittedFiles.length > 0 && (
+                  <div className="file-section-label">UNCOMMITTED · {uncommittedFiles.length}</div>
+                )}
+                {uncommittedFiles.map((f) => (
+                  <FileRow key={f.path} file={f} selected={selectedFile === f} onClick={() => setSelectedFile(f)} />
+                ))}
+                {diff.files.length === 0 && <p className="diff-note">No differences.</p>}
+              </div>
+            </>
+          )}
+        </div>
+
+        <Resizer onResize={(dx) => setFilePanelWidth((w) => clamp(w + dx, 180, 480))} />
+
+        <div className="panel diff-panel">
+          {selectedFile && (
+            <>
+              <div className="diff-panel-header">
+                <span className="diff-panel-path">{selectedFile.path}</span>
+                <span className="num diff-add">+{selectedFile.additions}</span>
+                <span className="num diff-del">-{selectedFile.deletions}</span>
+              </div>
+              <div className="diff-panel-body">
+                <SideBySideDiff file={selectedFile} />
+              </div>
+            </>
+          )}
+        </div>
       </div>
-    </main>
+    </div>
+  );
+}
+
+function FileRow({ file, selected, onClick }: { file: FileDiff; selected: boolean; onClick: () => void }) {
+  const statusLetter = file.status[0]?.toUpperCase() ?? "?";
+  return (
+    <div className={"file-row" + (selected ? " file-row--selected" : "")} onClick={onClick}>
+      <span className={`file-status file-status--${file.status}`}>{statusLetter}</span>
+      <span className="file-path">{file.path}</span>
+      <span className="num diff-add">+{file.additions}</span>
+      <span className="num diff-del">-{file.deletions}</span>
+    </div>
   );
 }
 
