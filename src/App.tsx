@@ -409,6 +409,72 @@ function GearIcon() {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+      <path d="M3 3l10 10M13 3L3 13" />
+    </svg>
+  );
+}
+
+/** A dropdown for a small fixed set of options, styled to match BranchPicker's trigger/popover
+ * instead of a bare native <select> (which looks like unstyled browser chrome next to it). */
+function SimpleSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  align = "left",
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+  align?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [open]);
+
+  return (
+    <div className="searchable-select" ref={rootRef}>
+      <button
+        type="button"
+        className={"searchable-select-trigger" + (open ? " searchable-select-trigger--open" : "")}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="searchable-select-value">{options.find((o) => o.value === value)?.label ?? value}</span>
+        <ChevronDownIcon />
+      </button>
+      {open && (
+        <div className={"searchable-select-popover" + (align === "right" ? " searchable-select-popover--right" : "")}>
+          <div className="searchable-select-list">
+            {options.map((opt) => (
+              <div
+                key={opt.value}
+                className={"searchable-select-option" + (opt.value === value ? " searchable-select-option--selected" : "")}
+                onClick={() => {
+                  onChange(opt.value);
+                  setOpen(false);
+                }}
+              >
+                <span className="searchable-select-option-label">{opt.label}</span>
+                {opt.value === value && <CheckIcon />}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type FontChoice = "system" | "pretendard";
 const FONT_STORAGE_KEY = "maditor:font";
 
@@ -454,25 +520,38 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="settings-tabs">
-          <button
-            type="button"
-            className={"settings-tab" + (tab === "general" ? " settings-tab--active" : "")}
-            onClick={() => setTab("general")}
-          >
-            General
+        <div className="settings-header">
+          <span className="settings-title">Settings</span>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close settings">
+            <CloseIcon />
           </button>
         </div>
-        <div className="settings-content">
-          {tab === "general" && (
-            <div className="settings-row">
-              <span className="settings-label">Font</span>
-              <select className="settings-select" value={font} onChange={(e) => setFont(e.currentTarget.value as FontChoice)}>
-                <option value="system">System</option>
-                <option value="pretendard">Pretendard</option>
-              </select>
-            </div>
-          )}
+        <div className="settings-body">
+          <div className="settings-tabs">
+            <button
+              type="button"
+              className={"settings-tab" + (tab === "general" ? " settings-tab--active" : "")}
+              onClick={() => setTab("general")}
+            >
+              General
+            </button>
+          </div>
+          <div className="settings-content">
+            {tab === "general" && (
+              <div className="settings-row">
+                <span className="settings-label">Font</span>
+                <SimpleSelect
+                  value={font}
+                  onChange={setFont}
+                  align="right"
+                  options={[
+                    { value: "system", label: "System" },
+                    { value: "pretendard", label: "Pretendard" },
+                  ]}
+                />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

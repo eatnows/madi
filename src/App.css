@@ -187,6 +187,11 @@ select {
   overflow: hidden;
 }
 
+.searchable-select-popover--right {
+  left: auto;
+  right: 0;
+}
+
 .searchable-select-search {
   width: 100%;
   border: none;
@@ -385,8 +390,29 @@ select {
 
 .settings-modal {
   width: 480px;
-  height: 320px;
   display: flex;
+  flex-direction: column;
+}
+
+.settings-header {
+  height: 44px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settings-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-strong);
+}
+
+.settings-body {
+  display: flex;
+  min-height: 240px;
 }
 
 .settings-tabs {
@@ -433,10 +459,6 @@ select {
 .settings-label {
   font-size: 12px;
   color: var(--text-dim);
-}
-
-.settings-select {
-  font-size: 12px;
 }
 
 .main-row {
