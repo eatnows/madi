@@ -137,21 +137,27 @@ select {
   gap: 12px;
 }
 
-.topbar-base-label {
-  color: var(--text-dim);
-  font-size: 12px;
-}
-
 .base-select {
   border-color: transparent;
   background-color: transparent;
   color: var(--text-strong);
+  font-size: 11px;
+  padding: 2px 4px;
 }
 
 .base-select:hover,
 .base-select:focus {
   border-color: var(--border);
-  background-color: var(--panel-bg);
+  background-color: var(--chrome-bg);
+}
+
+.empty-area {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 14px;
 }
 
 .view-toggle {
@@ -338,6 +344,28 @@ select {
   color: var(--text-dim);
   font-size: 11px;
   margin-top: 4px;
+}
+
+.list-row-base {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.list-row-base-label {
+  color: var(--text-dimmer);
+  font-size: 11px;
+}
+
+.list-row-status {
+  color: var(--text-dimmer);
+  font-size: 11px;
+}
+
+.focused-base {
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 /* ---- file list ---- */

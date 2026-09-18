@@ -9,6 +9,8 @@ type WorktreeInfo = {
   branch: string | null;
   head_oid: string | null;
   is_main: boolean;
+  ahead: number | null;
+  behind: number | null;
 };
 
 type Segment = { text: string; emphasized: boolean };
@@ -137,12 +139,40 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function defaultBranchOf(branches: string[]): string {
+  return branches.includes("main") ? "main" : (branches[0] ?? "main");
+}
+
+function baseBranchesStorageKey(repoPath: string) {
+  return `worktree-viewer:base-branches:${repoPath}`;
+}
+
+function loadPinnedBaseBranches(repoPath: string): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(baseBranchesStorageKey(repoPath));
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePinnedBaseBranches(repoPath: string, map: Record<string, string>) {
+  try {
+    localStorage.setItem(baseBranchesStorageKey(repoPath), JSON.stringify(map));
+  } catch {
+    // best-effort; private browsing or storage quota issues just mean re-pinning next launch
+  }
+}
+
 type ViewMode = "sidebar" | "focused";
 
 function App() {
   const [repoPath, setRepoPath] = useState("");
-  const [baseBranch, setBaseBranch] = useState("main");
   const [branches, setBranches] = useState<string[]>([]);
+  // Each worktree's base branch is pinned once (at first scan) and remembered here, keyed by
+  // worktree path, instead of one global selector that would redefine "changed" for every
+  // worktree whenever it's touched.
+  const [baseBranches, setBaseBranches] = useState<Record<string, string>>({});
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [selectedWorktree, setSelectedWorktree] = useState<WorktreeInfo | null>(null);
   const [diff, setDiff] = useState<DiffResult | null>(null);
@@ -153,21 +183,38 @@ function App() {
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
   const [filePanelWidth, setFilePanelWidth] = useState(260);
 
-  async function scan(path: string, branchOverride?: string) {
+  async function refreshWorktrees(path: string, pins: Record<string, string>) {
+    const wts = await invoke<WorktreeInfo[]>("list_worktrees", { repoPath: path, baseBranches: pins });
+    setWorktrees(wts);
+    return wts;
+  }
+
+  async function scan(path: string) {
     setRepoPath(path);
     setError(null);
     setDiff(null);
     setSelectedWorktree(null);
     setSelectedFile(null);
     try {
-      const [wts, brs] = await Promise.all([
-        invoke<WorktreeInfo[]>("list_worktrees", { repoPath: path }),
-        invoke<string[]>("list_branches", { repoPath: path }),
-      ]);
-      setWorktrees(wts);
+      const brs = await invoke<string[]>("list_branches", { repoPath: path });
       setBranches(brs);
-      const wanted = branchOverride ?? baseBranch;
-      setBaseBranch(brs.includes(wanted) ? wanted : (brs.includes("main") ? "main" : brs[0] ?? wanted));
+
+      const pins = loadPinnedBaseBranches(path);
+      let wts = await refreshWorktrees(path, pins);
+
+      // Pin any newly discovered worktree to a sensible default, then refresh once more so
+      // its ahead/behind reflects that pin immediately.
+      let changed = false;
+      for (const wt of wts) {
+        if (!pins[wt.path]) {
+          pins[wt.path] = defaultBranchOf(brs);
+          changed = true;
+        }
+      }
+      if (changed) wts = await refreshWorktrees(path, pins);
+
+      setBaseBranches(pins);
+      savePinnedBaseBranches(path, pins);
     } catch (e) {
       setWorktrees([]);
       setBranches([]);
@@ -181,7 +228,7 @@ function App() {
   }
 
   function rescan() {
-    if (repoPath) scan(repoPath, baseBranch);
+    if (repoPath) scan(repoPath);
   }
 
   async function loadDiff(wt: WorktreeInfo, branch: string) {
@@ -202,17 +249,39 @@ function App() {
 
   function selectWorktree(wt: WorktreeInfo) {
     setSelectedWorktree(wt);
-    loadDiff(wt, baseBranch);
+    const base = baseBranches[wt.path];
+    if (base) loadDiff(wt, base);
   }
 
-  function changeBaseBranch(branch: string) {
-    setBaseBranch(branch);
-    if (selectedWorktree) loadDiff(selectedWorktree, branch);
+  async function changeWorktreeBase(wt: WorktreeInfo, branch: string) {
+    const pins = { ...baseBranches, [wt.path]: branch };
+    setBaseBranches(pins);
+    savePinnedBaseBranches(repoPath, pins);
+    setError(null);
+    try {
+      const wts = await refreshWorktrees(repoPath, pins);
+      if (selectedWorktree?.path === wt.path) {
+        const updated = wts.find((w) => w.path === wt.path) ?? wt;
+        setSelectedWorktree(updated);
+        loadDiff(updated, branch);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   const projectName = repoPath.split("/").filter(Boolean).pop() ?? "";
   const committedFiles = diff?.files.filter((f) => f.section === "committed") ?? [];
   const uncommittedFiles = diff?.files.filter((f) => f.section === "uncommitted") ?? [];
+  const selectedBase = selectedWorktree ? baseBranches[selectedWorktree.path] : undefined;
+
+  // Merges panels into a single centered message instead of several empty boxes.
+  const noProject = !repoPath;
+  const noWorktrees = repoPath !== "" && worktrees.length === 0;
+  const noSelection = !noProject && !noWorktrees && !selectedWorktree;
+  const noChanges = !!selectedWorktree && !!diff && diff.files.length === 0;
+  const wholeAreaEmptyMessage = noProject ? "No project" : noWorktrees ? "No data" : null;
+  const detailAreaEmptyMessage = noSelection ? "No data" : noChanges ? "No changes" : null;
 
   return (
     <div className="app-shell">
@@ -234,23 +303,9 @@ function App() {
         </div>
         <div className="topbar-right">
           {repoPath && (
-            <>
-              <span className="topbar-base-label">base:</span>
-              <select
-                className="base-select"
-                value={baseBranch}
-                onChange={(e) => changeBaseBranch(e.currentTarget.value)}
-              >
-                {branches.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-              <button type="button" onClick={rescan}>
-                Rescan
-              </button>
-            </>
+            <button type="button" onClick={rescan}>
+              Rescan
+            </button>
           )}
           <div className="view-toggle">
             <button
@@ -286,123 +341,166 @@ function App() {
             </button>
           </div>
 
-          <div className="panel worktree-panel" style={{ width: worktreePanelWidth }}>
-            <div className="panel-header">
-              <div className="panel-title">{projectName || "No project"}</div>
-              <div className="panel-subtitle">Worktrees</div>
-            </div>
-            <div className="panel-body">
-              {worktrees.map((wt) => (
-                <div
-                  key={wt.path}
-                  className={
-                    "list-row" + (selectedWorktree?.path === wt.path ? " list-row--selected" : "")
-                  }
-                  onClick={() => selectWorktree(wt)}
-                >
-                  <div className="list-row-title">{wt.name}</div>
-                  <div className="list-row-sub">{wt.branch ?? "(detached)"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <Resizer onResize={(dx) => setWorktreePanelWidth((w) => clamp(w + dx, 180, 420))} />
-
-          <div className="panel file-panel" style={{ width: filePanelWidth }}>
-            {selectedWorktree && diff && (
-              <>
+          {wholeAreaEmptyMessage ? (
+            <EmptyArea message={wholeAreaEmptyMessage} />
+          ) : (
+            <>
+              <div className="panel worktree-panel" style={{ width: worktreePanelWidth }}>
                 <div className="panel-header">
-                  <div className="panel-title">{selectedWorktree.name}</div>
-                  <div className="panel-subtitle">vs {baseBranch}</div>
+                  <div className="panel-title">{projectName}</div>
+                  <div className="panel-subtitle">Worktrees</div>
                 </div>
                 <div className="panel-body">
-                  {committedFiles.length > 0 && (
-                    <div className="file-section-label">COMMITTED · {committedFiles.length}</div>
-                  )}
-                  {committedFiles.map((f) => (
-                    <FileRow key={f.path} file={f} selected={selectedFile === f} onClick={() => setSelectedFile(f)} />
+                  {worktrees.map((wt) => (
+                    <div
+                      key={wt.path}
+                      className={
+                        "list-row" + (selectedWorktree?.path === wt.path ? " list-row--selected" : "")
+                      }
+                      onClick={() => selectWorktree(wt)}
+                    >
+                      <div className="list-row-title">{wt.name}</div>
+                      <div className="list-row-sub">{wt.branch ?? "(detached)"}</div>
+                      <div className="list-row-base" onClick={(e) => e.stopPropagation()}>
+                        <span className="list-row-base-label">base:</span>
+                        <select
+                          className="base-select"
+                          value={baseBranches[wt.path] ?? ""}
+                          onChange={(e) => changeWorktreeBase(wt, e.currentTarget.value)}
+                        >
+                          {branches.map((b) => (
+                            <option key={b} value={b}>
+                              {b}
+                            </option>
+                          ))}
+                        </select>
+                        {wt.ahead !== null && wt.behind !== null && (
+                          <span className="list-row-status">
+                            {wt.ahead === 0 && wt.behind === 0 ? "up to date" : `↑${wt.ahead} ↓${wt.behind}`}
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   ))}
-                  {uncommittedFiles.length > 0 && (
-                    <div className="file-section-label">UNCOMMITTED · {uncommittedFiles.length}</div>
-                  )}
-                  {uncommittedFiles.map((f) => (
-                    <FileRow key={f.path} file={f} selected={selectedFile === f} onClick={() => setSelectedFile(f)} />
-                  ))}
-                  {diff.files.length === 0 && <p className="diff-note">No differences.</p>}
                 </div>
-              </>
-            )}
-          </div>
+              </div>
 
-          <Resizer onResize={(dx) => setFilePanelWidth((w) => clamp(w + dx, 180, 480))} />
+              <Resizer onResize={(dx) => setWorktreePanelWidth((w) => clamp(w + dx, 180, 420))} />
 
-          <div className="panel diff-panel">
-            <DiffView file={selectedFile} />
-          </div>
+              {detailAreaEmptyMessage ? (
+                <EmptyArea message={detailAreaEmptyMessage} />
+              ) : (
+                <>
+                  <div className="panel file-panel" style={{ width: filePanelWidth }}>
+                    <div className="panel-header">
+                      <div className="panel-title">{selectedWorktree!.name}</div>
+                      <div className="panel-subtitle">vs {selectedBase}</div>
+                    </div>
+                    <div className="panel-body">
+                      {committedFiles.length > 0 && (
+                        <div className="file-section-label">COMMITTED · {committedFiles.length}</div>
+                      )}
+                      {committedFiles.map((f) => (
+                        <FileRow key={f.path} file={f} selected={selectedFile === f} onClick={() => setSelectedFile(f)} />
+                      ))}
+                      {uncommittedFiles.length > 0 && (
+                        <div className="file-section-label">UNCOMMITTED · {uncommittedFiles.length}</div>
+                      )}
+                      {uncommittedFiles.map((f) => (
+                        <FileRow key={f.path} file={f} selected={selectedFile === f} onClick={() => setSelectedFile(f)} />
+                      ))}
+                    </div>
+                  </div>
+
+                  <Resizer onResize={(dx) => setFilePanelWidth((w) => clamp(w + dx, 180, 480))} />
+
+                  <div className="panel diff-panel">
+                    <DiffView file={selectedFile} />
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       ) : (
         <div className="focused-layout">
-          <div className="focused-subbar">
-            <select className="focused-select" value={projectName} disabled>
-              <option value={projectName}>{projectName || "No project"}</option>
-            </select>
-            <select
-              className="focused-select"
-              value={selectedWorktree?.path ?? ""}
-              onChange={(e) => {
-                const wt = worktrees.find((w) => w.path === e.currentTarget.value);
-                if (wt) selectWorktree(wt);
-              }}
-            >
-              <option value="" disabled>
-                Select worktree…
-              </option>
-              {worktrees.map((wt) => (
-                <option key={wt.path} value={wt.path}>
-                  {wt.name} ({wt.branch ?? "detached"})
-                </option>
-              ))}
-            </select>
-            <select
-              className="focused-select"
-              value={selectedFile?.path ?? ""}
-              onChange={(e) => {
-                const f = diff?.files.find((f) => f.path === e.currentTarget.value);
-                if (f) setSelectedFile(f);
-              }}
-              disabled={!diff}
-            >
-              <option value="" disabled>
-                Select file…
-              </option>
-              {committedFiles.length > 0 && (
-                <optgroup label="Committed">
-                  {committedFiles.map((f) => (
-                    <option key={f.path} value={f.path}>
-                      {f.path}
+          {wholeAreaEmptyMessage ? (
+            <EmptyArea message={wholeAreaEmptyMessage} />
+          ) : (
+            <>
+              <div className="focused-subbar">
+                <select className="focused-select" value={projectName} disabled>
+                  <option value={projectName}>{projectName}</option>
+                </select>
+                <select
+                  className="focused-select"
+                  value={selectedWorktree?.path ?? ""}
+                  onChange={(e) => {
+                    const wt = worktrees.find((w) => w.path === e.currentTarget.value);
+                    if (wt) selectWorktree(wt);
+                  }}
+                >
+                  <option value="" disabled>
+                    Select worktree…
+                  </option>
+                  {worktrees.map((wt) => (
+                    <option key={wt.path} value={wt.path}>
+                      {wt.name} ({wt.branch ?? "detached"})
                     </option>
                   ))}
-                </optgroup>
+                </select>
+                {selectedWorktree && (
+                  <span className="focused-base">vs {selectedBase}</span>
+                )}
+                <select
+                  className="focused-select"
+                  value={selectedFile?.path ?? ""}
+                  onChange={(e) => {
+                    const f = diff?.files.find((f) => f.path === e.currentTarget.value);
+                    if (f) setSelectedFile(f);
+                  }}
+                  disabled={!diff}
+                >
+                  <option value="" disabled>
+                    Select file…
+                  </option>
+                  {committedFiles.length > 0 && (
+                    <optgroup label="Committed">
+                      {committedFiles.map((f) => (
+                        <option key={f.path} value={f.path}>
+                          {f.path}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {uncommittedFiles.length > 0 && (
+                    <optgroup label="Uncommitted">
+                      {uncommittedFiles.map((f) => (
+                        <option key={f.path} value={f.path}>
+                          {f.path}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+              {detailAreaEmptyMessage ? (
+                <EmptyArea message={detailAreaEmptyMessage} />
+              ) : (
+                <div className="panel diff-panel diff-panel--focused">
+                  <DiffView file={selectedFile} />
+                </div>
               )}
-              {uncommittedFiles.length > 0 && (
-                <optgroup label="Uncommitted">
-                  {uncommittedFiles.map((f) => (
-                    <option key={f.path} value={f.path}>
-                      {f.path}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-          </div>
-          <div className="panel diff-panel diff-panel--focused">
-            <DiffView file={selectedFile} />
-          </div>
+            </>
+          )}
         </div>
       )}
     </div>
   );
+}
+
+function EmptyArea({ message }: { message: string }) {
+  return <div className="empty-area">{message}</div>;
 }
 
 function DiffView({ file }: { file: FileDiff | null }) {
