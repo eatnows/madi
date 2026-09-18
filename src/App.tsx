@@ -266,13 +266,14 @@ function BranchPicker({
     <div className="searchable-select" ref={rootRef}>
       <button
         type="button"
-        className="searchable-select-trigger"
+        className={"searchable-select-trigger" + (open ? " searchable-select-trigger--open" : "")}
         onClick={() => {
           setOpen((o) => !o);
           setQuery("");
         }}
       >
-        {value}
+        <span className="searchable-select-value">{value}</span>
+        <ChevronDownIcon />
       </button>
       {open && (
         <div className="searchable-select-popover">
@@ -325,6 +326,14 @@ function LayoutFocusedIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
       <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6l4 4 4-4" />
     </svg>
   );
 }

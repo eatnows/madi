@@ -143,39 +143,54 @@ select {
 }
 
 .searchable-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border-color: transparent;
   background-color: transparent;
   color: var(--text-strong);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px;
   padding: 2px 4px;
   border-radius: 4px;
 }
 
+.searchable-select-trigger svg {
+  color: var(--text-dimmer);
+}
+
 .searchable-select-trigger:hover {
   border-color: var(--border);
-  background-color: var(--chrome-bg);
+  background-color: var(--panel-bg);
+}
+
+.searchable-select-trigger--open {
+  border-color: var(--border);
+  background-color: var(--selected-bg);
 }
 
 .searchable-select-popover {
   position: absolute;
-  top: calc(100% + 2px);
+  top: calc(100% + 4px);
   left: 0;
   z-index: 20;
-  width: 200px;
+  width: 220px;
   background: var(--chrome-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   overflow: hidden;
 }
 
 .searchable-select-search {
   width: 100%;
   border: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   border-radius: 0;
   padding: 6px 8px;
   font-size: 12px;
+  background: transparent;
+  color: var(--text-strong);
 }
 
 .searchable-select-list {
@@ -186,6 +201,7 @@ select {
 
 .searchable-select-folder {
   padding: 4px 8px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -194,6 +210,7 @@ select {
 
 .searchable-select-option {
   padding: 5px 8px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 12px;
   color: var(--text-strong);
   cursor: pointer;
