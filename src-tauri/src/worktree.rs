@@ -37,6 +37,24 @@ pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeInfo>, String> {
     Ok(result)
 }
 
+/// Lists local branch names, for populating a base-branch picker.
+#[tauri::command]
+pub fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
+    let branches = repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(|e| e.to_string())?;
+    let mut names = Vec::new();
+    for branch in branches {
+        let (branch, _) = branch.map_err(|e| e.to_string())?;
+        if let Some(name) = branch.name().map_err(|e| e.to_string())? {
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,5 +64,12 @@ mod tests {
         let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
         let worktrees = list_worktrees(repo_root).expect("list_worktrees should succeed");
         assert!(worktrees.iter().any(|w| w.is_main));
+    }
+
+    #[test]
+    fn lists_main_branch_of_this_repo() {
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let branches = list_branches(repo_root).expect("list_branches should succeed");
+        assert!(branches.iter().any(|b| b == "main"));
     }
 }

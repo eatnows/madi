@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 type WorktreeInfo = {
@@ -141,45 +142,72 @@ type ViewMode = "sidebar" | "focused";
 function App() {
   const [repoPath, setRepoPath] = useState("");
   const [baseBranch, setBaseBranch] = useState("main");
+  const [branches, setBranches] = useState<string[]>([]);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [selectedWorktree, setSelectedWorktree] = useState<WorktreeInfo | null>(null);
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("sidebar");
-  const [editingConfig, setEditingConfig] = useState(true);
 
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
   const [filePanelWidth, setFilePanelWidth] = useState(260);
 
-  async function loadWorktrees() {
+  async function scan(path: string, branchOverride?: string) {
+    setRepoPath(path);
     setError(null);
     setDiff(null);
     setSelectedWorktree(null);
     setSelectedFile(null);
     try {
-      setWorktrees(await invoke<WorktreeInfo[]>("list_worktrees", { repoPath }));
+      const [wts, brs] = await Promise.all([
+        invoke<WorktreeInfo[]>("list_worktrees", { repoPath: path }),
+        invoke<string[]>("list_branches", { repoPath: path }),
+      ]);
+      setWorktrees(wts);
+      setBranches(brs);
+      const wanted = branchOverride ?? baseBranch;
+      setBaseBranch(brs.includes(wanted) ? wanted : (brs.includes("main") ? "main" : brs[0] ?? wanted));
     } catch (e) {
       setWorktrees([]);
+      setBranches([]);
       setError(String(e));
     }
   }
 
-  async function selectWorktree(wt: WorktreeInfo) {
-    setSelectedWorktree(wt);
+  async function pickProject() {
+    const dir = await open({ directory: true, multiple: false, title: "Open a git repository" });
+    if (typeof dir === "string") scan(dir);
+  }
+
+  function rescan() {
+    if (repoPath) scan(repoPath, baseBranch);
+  }
+
+  async function loadDiff(wt: WorktreeInfo, branch: string) {
     setDiff(null);
     setSelectedFile(null);
     setError(null);
     try {
       const result = await invoke<DiffResult>("diff_against_base", {
         worktreePath: wt.path,
-        baseBranch,
+        baseBranch: branch,
       });
       setDiff(result);
       setSelectedFile(result.files[0] ?? null);
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  function selectWorktree(wt: WorktreeInfo) {
+    setSelectedWorktree(wt);
+    loadDiff(wt, baseBranch);
+  }
+
+  function changeBaseBranch(branch: string) {
+    setBaseBranch(branch);
+    if (selectedWorktree) loadDiff(selectedWorktree, branch);
   }
 
   const projectName = repoPath.split("/").filter(Boolean).pop() ?? "";
@@ -189,53 +217,37 @@ function App() {
   return (
     <div className="app-shell">
       <div className="topbar">
-        {editingConfig ? (
-          <form
-            className="topbar-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              loadWorktrees();
-              setEditingConfig(false);
-            }}
-          >
-            <input
-              className="topbar-input"
-              value={repoPath}
-              onChange={(e) => setRepoPath(e.currentTarget.value)}
-              placeholder="/path/to/repo"
-              autoFocus
-            />
-            <input
-              className="topbar-input topbar-branch"
-              value={baseBranch}
-              onChange={(e) => setBaseBranch(e.currentTarget.value)}
-              placeholder="base branch"
-            />
-            <button type="submit">Scan</button>
-          </form>
-        ) : (
-          <button
-            type="button"
-            className="breadcrumb"
-            onClick={() => setEditingConfig(true)}
-            title="Click to change project path or base branch"
-          >
-            <span className="breadcrumb-brand">worktree-viewer</span>
-            <span className="breadcrumb-sep">/</span>
-            <span>{projectName}</span>
-            {selectedWorktree && (
-              <>
-                <span className="breadcrumb-sep">/</span>
-                <span>{selectedWorktree.branch ?? selectedWorktree.name}</span>
-              </>
-            )}
-          </button>
-        )}
-        <div className="topbar-right">
-          {!editingConfig && (
+        <div className="breadcrumb">
+          <span className="breadcrumb-brand">worktree-viewer</span>
+          {projectName && (
             <>
-              <span className="topbar-base">base: {baseBranch}</span>
-              <button type="button" onClick={loadWorktrees}>
+              <span className="breadcrumb-sep">/</span>
+              <span>{projectName}</span>
+            </>
+          )}
+          {selectedWorktree && (
+            <>
+              <span className="breadcrumb-sep">/</span>
+              <span>{selectedWorktree.branch ?? selectedWorktree.name}</span>
+            </>
+          )}
+        </div>
+        <div className="topbar-right">
+          {repoPath && (
+            <>
+              <span className="topbar-base-label">base:</span>
+              <select
+                className="base-select"
+                value={baseBranch}
+                onChange={(e) => changeBaseBranch(e.currentTarget.value)}
+              >
+                {branches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={rescan}>
                 Rescan
               </button>
             </>
@@ -264,9 +276,14 @@ function App() {
         <div className="main-row">
           <div className="rail">
             {projectName && <div className="rail-tile rail-tile--active">{projectName[0]?.toUpperCase()}</div>}
-            <div className="rail-tile rail-tile--add" title="Multiple projects: not wired up yet">
+            <button
+              type="button"
+              className="rail-tile rail-tile--add"
+              onClick={pickProject}
+              title="Open a git repository"
+            >
               +
-            </div>
+            </button>
           </div>
 
           <div className="panel worktree-panel" style={{ width: worktreePanelWidth }}>

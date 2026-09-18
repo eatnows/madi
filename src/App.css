@@ -87,19 +87,6 @@ select {
   cursor: pointer;
 }
 
-.topbar-input {
-  border-color: transparent;
-  background-color: transparent;
-  color: var(--text-dim);
-}
-
-.topbar-input:hover,
-.topbar-input:focus {
-  border-color: var(--border);
-  background-color: var(--panel-bg);
-  color: var(--text-strong);
-}
-
 /* ---- app shell ---- */
 
 .app-shell {
@@ -120,16 +107,6 @@ select {
   border-bottom: 1px solid var(--border);
 }
 
-.topbar-form {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.topbar-branch {
-  max-width: 120px;
-}
-
 .topbar-error {
   color: var(--red);
   font-size: 12px;
@@ -139,17 +116,9 @@ select {
   display: flex;
   align-items: center;
   gap: 6px;
-  border: none;
-  background: transparent;
   padding: 4px 6px;
-  border-radius: 4px;
   font-family: "SF Mono", Menlo, Consolas, monospace;
   color: var(--text-dim);
-}
-
-.breadcrumb:hover {
-  background: var(--panel-bg);
-  color: var(--text-strong);
 }
 
 .breadcrumb-brand {
@@ -168,9 +137,21 @@ select {
   gap: 12px;
 }
 
-.topbar-base {
+.topbar-base-label {
   color: var(--text-dim);
   font-size: 12px;
+}
+
+.base-select {
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--text-strong);
+}
+
+.base-select:hover,
+.base-select:focus {
+  border-color: var(--border);
+  background-color: var(--panel-bg);
 }
 
 .view-toggle {
@@ -244,11 +225,16 @@ select {
 .rail-tile {
   width: 32px;
   height: 32px;
+  padding: 0;
+  border: none;
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 600;
+  font-size: 13px;
+  font-family: inherit;
+  background: transparent;
   color: var(--text-dim);
 }
 
@@ -261,7 +247,7 @@ select {
   border: 1px dashed var(--border);
   color: var(--text-dimmer);
   font-size: 16px;
-  cursor: default;
+  cursor: pointer;
 }
 
 /* ---- panels ---- */
