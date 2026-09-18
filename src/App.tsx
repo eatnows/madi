@@ -43,6 +43,88 @@ type DiffResult = {
 
 type Row = { gap: true } | { gap: false; left: DiffLine | null; right: DiffLine | null };
 
+type CommitInfo = {
+  oid: string;
+  short_oid: string;
+  summary: string;
+  author_name: string;
+  author_email: string;
+  timestamp: number;
+  parent_oids: string[];
+};
+
+type GraphRow = {
+  commit: CommitInfo;
+  lane: number;
+  /** Lanes with a straight line passing through this row untouched (not this commit's own lane). */
+  passThrough: number[];
+  /** Other lanes converging into this commit's lane at this row (extra parents already tracked,
+   * or ancestor collisions) — drawn as a curve joining up into `lane`. */
+  convergeFrom: number[];
+  /** New lanes spawned by this commit's extra parents (merge branches not seen yet) — drawn as a
+   * curve leaving `lane` heading to each new lane below. */
+  divergeTo: number[];
+  /** Whether this commit's own lane continues downward (has a first parent still to walk). */
+  continues: boolean;
+  maxLane: number;
+};
+
+/** Assigns each commit a vertical "lane" so the graph can be drawn as git log --graph does:
+ * a lane holds one branch of history: a straight line unless a merge commit (multiple parents)
+ * spawns a new lane for the branch it merged in, which later re-converges when that lane's
+ * history reaches a commit another lane is also waiting for. */
+function computeGraphRows(commits: CommitInfo[]): GraphRow[] {
+  // lanes[k] = oid this lane is waiting to reach next, or null if the lane is free.
+  const lanes: (string | null)[] = [];
+  const rows: GraphRow[] = [];
+
+  for (const commit of commits) {
+    const matches: number[] = [];
+    lanes.forEach((waiting, i) => {
+      if (waiting === commit.oid) matches.push(i);
+    });
+
+    let lane: number;
+    if (matches.length > 0) {
+      lane = matches[0];
+      for (const extra of matches.slice(1)) lanes[extra] = null;
+    } else {
+      lane = lanes.findIndex((x) => x === null);
+      if (lane === -1) lane = lanes.length;
+    }
+
+    const passThrough: number[] = [];
+    lanes.forEach((waiting, i) => {
+      if (i !== lane && waiting !== null && !matches.includes(i)) passThrough.push(i);
+    });
+
+    const [firstParent, ...extraParents] = commit.parent_oids;
+    lanes[lane] = firstParent ?? null;
+
+    const divergeTo: number[] = [];
+    for (const parent of extraParents) {
+      const existing = lanes.findIndex((x) => x === parent);
+      if (existing !== -1) continue; // already tracked; will converge naturally later
+      const free = lanes.findIndex((x) => x === null);
+      const newLane = free === -1 ? lanes.length : free;
+      lanes[newLane] = parent;
+      divergeTo.push(newLane);
+    }
+
+    rows.push({
+      commit,
+      lane,
+      passThrough,
+      convergeFrom: matches.slice(1),
+      divergeTo,
+      continues: firstParent !== undefined,
+      maxLane: Math.max(lane, ...passThrough, ...divergeTo, 0),
+    });
+  }
+
+  return rows;
+}
+
 /** Pairs delete/insert runs side by side so they render as aligned old|new columns. */
 function buildRows(lines: DiffLine[]): Row[] {
   const rows: Row[] = [];
@@ -133,6 +215,126 @@ function Resizer({ onResize }: { onResize: (deltaX: number) => void }) {
   }
 
   return <div className="resizer" onMouseDown={onMouseDown} />;
+}
+
+/** Drag handle for the bottom panel's height. */
+function VerticalResizer({ onResize }: { onResize: (deltaY: number) => void }) {
+  const dragging = useRef(false);
+  const lastY = useRef(0);
+
+  function onMouseDown(e: React.MouseEvent) {
+    dragging.current = true;
+    lastY.current = e.clientY;
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      onResize(ev.clientY - lastY.current);
+      lastY.current = ev.clientY;
+    };
+    const onMouseUp = () => {
+      dragging.current = false;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  return <div className="vertical-resizer" onMouseDown={onMouseDown} />;
+}
+
+const GRAPH_PAGE_SIZE = 100;
+const LANE_WIDTH = 16;
+const LANE_X0 = 10;
+const LANE_COLORS = ["#a08256", "#7fa87f", "#a87f7f", "#8a8fbf", "#bf8fbf", "#8fb0bf"];
+
+function laneColor(lane: number) {
+  return LANE_COLORS[lane % LANE_COLORS.length];
+}
+
+function formatRelativeTime(timestampSeconds: number): string {
+  const diffMs = Date.now() - timestampSeconds * 1000;
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
+}
+
+function GraphLane({
+  row,
+  laneCount,
+  hoveredLane,
+}: {
+  row: GraphRow;
+  laneCount: number;
+  hoveredLane: number | null;
+}) {
+  const width = laneCount * LANE_WIDTH + LANE_X0;
+  const x = (lane: number) => LANE_X0 + lane * LANE_WIDTH;
+  const opacity = (...lanes: number[]) => (hoveredLane === null || lanes.includes(hoveredLane) ? 1 : 0.22);
+  return (
+    <svg width={width} height={36} className="graph-lane">
+      {row.passThrough.map((lane) => (
+        <line
+          key={`p${lane}`}
+          x1={x(lane)}
+          y1={0}
+          x2={x(lane)}
+          y2={36}
+          stroke={laneColor(lane)}
+          strokeWidth={2}
+          opacity={opacity(lane)}
+        />
+      ))}
+      {/* incoming line from above, unless this lane just started at this row */}
+      <line
+        x1={x(row.lane)}
+        y1={0}
+        x2={x(row.lane)}
+        y2={18}
+        stroke={laneColor(row.lane)}
+        strokeWidth={2}
+        opacity={opacity(row.lane)}
+      />
+      {row.continues && (
+        <line
+          x1={x(row.lane)}
+          y1={18}
+          x2={x(row.lane)}
+          y2={36}
+          stroke={laneColor(row.lane)}
+          strokeWidth={2}
+          opacity={opacity(row.lane)}
+        />
+      )}
+      {row.convergeFrom.map((lane) => (
+        <path
+          key={`c${lane}`}
+          d={`M ${x(lane)} 0 C ${x(lane)} 10, ${x(row.lane)} 8, ${x(row.lane)} 18`}
+          stroke={laneColor(lane)}
+          strokeWidth={2}
+          fill="none"
+          opacity={opacity(lane, row.lane)}
+        />
+      ))}
+      {row.divergeTo.map((lane) => (
+        <path
+          key={`d${lane}`}
+          d={`M ${x(row.lane)} 18 C ${x(row.lane)} 28, ${x(lane)} 26, ${x(lane)} 36`}
+          stroke={laneColor(lane)}
+          strokeWidth={2}
+          fill="none"
+          opacity={opacity(lane, row.lane)}
+        />
+      ))}
+      <circle cx={x(row.lane)} cy={18} r={5} fill={laneColor(row.lane)} opacity={opacity(row.lane)} />
+    </svg>
+  );
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -417,6 +619,35 @@ function CloseIcon() {
   );
 }
 
+function GitGraphIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="4" cy="3" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="4" cy="13" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="8" r="1.6" fill="currentColor" stroke="none" />
+      <path d="M4 4.6V11.4" />
+      <path d="M4 8c0-1.6 1.4-1.6 6.4-1.6" />
+    </svg>
+  );
+}
+
+function FollowIcon() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 3v10M4 7l4-4 4 4" />
+    </svg>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 2h4l-.5 5 2 2-1 1H5.5l-1 -1 2-2z" />
+      <path d="M8 10v4" />
+    </svg>
+  );
+}
+
 /** A dropdown for a small fixed set of options, styled to match BranchPicker's trigger/popover
  * instead of a bare native <select> (which looks like unstyled browser chrome next to it). */
 function SimpleSelect<T extends string>({
@@ -621,6 +852,10 @@ function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; worktree: WorktreeInfo } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projects, setProjects] = useState<string[]>(() => loadProjects());
+  const [gitPanelOpen, setGitPanelOpen] = useState(false);
+  const [gitPanelHeight, setGitPanelHeight] = useState(280);
+  const [graphBranch, setGraphBranch] = useState("");
+  const [followWorktree, setFollowWorktree] = useState(true);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -646,6 +881,12 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The git panel's branch tracks the selected worktree by default; a manual pick in the panel
+  // (which flips followWorktree off) breaks that link until another worktree is clicked.
+  useEffect(() => {
+    if (followWorktree && selectedWorktree?.branch) setGraphBranch(selectedWorktree.branch);
+  }, [followWorktree, selectedWorktree]);
+
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
   const [filePanelWidth, setFilePanelWidth] = useState(260);
 
@@ -661,6 +902,8 @@ function App() {
     setDiff(null);
     setSelectedWorktree(null);
     setSelectedFile(null);
+    setFollowWorktree(true);
+    setGraphBranch("");
     try {
       const brs = await invoke<string[]>("list_branches", { repoPath: path });
       setBranches(brs);
@@ -726,6 +969,7 @@ function App() {
 
   function selectWorktree(wt: WorktreeInfo) {
     setSelectedWorktree(wt);
+    setFollowWorktree(true);
     const base = baseBranches[wt.path];
     if (base) loadDiff(wt, base);
   }
@@ -1029,6 +1273,34 @@ function App() {
         </div>
       )}
 
+      {repoPath && gitPanelOpen && (
+        <GitPanel
+          repoPath={repoPath}
+          branches={branches}
+          branch={graphBranch}
+          onBranchChange={(b) => {
+            setFollowWorktree(false);
+            setGraphBranch(b);
+          }}
+          following={followWorktree}
+          height={gitPanelHeight}
+          onResizeHeight={(dy) => setGitPanelHeight((h) => clamp(h - dy, 160, 640))}
+          onClose={() => setGitPanelOpen(false)}
+        />
+      )}
+      {repoPath && (
+        <div className="bottom-bar">
+          <button
+            type="button"
+            className={"bottom-tab" + (gitPanelOpen ? " bottom-tab--active" : "")}
+            onClick={() => setGitPanelOpen((o) => !o)}
+          >
+            <GitGraphIcon />
+            Graph
+          </button>
+        </div>
+      )}
+
       {contextMenu && (
         <>
           <div className="context-menu-overlay" onClick={() => setContextMenu(null)} />
@@ -1052,6 +1324,123 @@ function App() {
 
 function EmptyArea({ message }: { message: string }) {
   return <div className="empty-area">{message}</div>;
+}
+
+/** Full-width git panel (spans under the sidebar too, like VS Code's bottom panel) — git
+ * features aren't in service of the diff view, they're their own thing that happens to default
+ * to whatever worktree/branch is selected. */
+function GitPanel({
+  repoPath,
+  branches,
+  branch,
+  onBranchChange,
+  following,
+  height,
+  onResizeHeight,
+  onClose,
+}: {
+  repoPath: string;
+  branches: string[];
+  branch: string;
+  onBranchChange: (branch: string) => void;
+  following: boolean;
+  height: number;
+  onResizeHeight: (deltaY: number) => void;
+  onClose: () => void;
+}) {
+  const [commits, setCommits] = useState<CommitInfo[]>([]);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hoveredLane, setHoveredLane] = useState<number | null>(null);
+  // Synchronous in-flight guard: `loadingMore` state can't prevent a second call fired before
+  // React re-renders with the state update, since both reads would still see the stale `false`.
+  const fetchingRef = useRef(false);
+
+  useEffect(() => {
+    setCommits([]);
+    setHasMore(true);
+    setError(null);
+    if (!branch) return;
+    fetchingRef.current = true;
+    invoke<CommitInfo[]>("git_log", { repoPath, branch, skip: 0, limit: GRAPH_PAGE_SIZE })
+      .then((cs) => {
+        setCommits(cs);
+        setHasMore(cs.length === GRAPH_PAGE_SIZE);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        fetchingRef.current = false;
+      });
+  }, [repoPath, branch]);
+
+  function loadMore() {
+    if (fetchingRef.current || !hasMore || !branch) return;
+    fetchingRef.current = true;
+    setLoadingMore(true);
+    invoke<CommitInfo[]>("git_log", { repoPath, branch, skip: commits.length, limit: GRAPH_PAGE_SIZE })
+      .then((cs) => {
+        setCommits((prev) => [...prev, ...cs]);
+        setHasMore(cs.length === GRAPH_PAGE_SIZE);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        fetchingRef.current = false;
+        setLoadingMore(false);
+      });
+  }
+
+  function onGraphScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) loadMore();
+  }
+
+  const rows = computeGraphRows(commits);
+  // Shared across every row so the lane columns line up instead of each row sizing itself to
+  // its own local lane count (which made the message/author/date columns jitter left-right).
+  const laneCount = rows.reduce((max, r) => Math.max(max, r.maxLane + 1), 1);
+
+  return (
+    <div className="bottom-panel" style={{ height }}>
+      <VerticalResizer onResize={onResizeHeight} />
+      <div className="bottom-panel-header">
+        <span className="git-icon">
+          <GitGraphIcon />
+        </span>
+        <span className="bp-title">Git</span>
+        {branch && <BranchPicker value={branch} branches={branches} onChange={onBranchChange} />}
+        <span className={following ? "follow-badge" : "pin-badge"}>
+          {following ? <FollowIcon /> : <PinIcon />}
+          {following ? "following worktree" : "pinned"}
+        </span>
+        <button type="button" className="icon-btn bottom-panel-close" onClick={onClose} aria-label="Close git panel">
+          <CloseIcon />
+        </button>
+      </div>
+      <div className="graph-area" onScroll={onGraphScroll}>
+        {error && <p className="diff-note">{error}</p>}
+        {!error && !branch && <p className="diff-note">Select a worktree to see its history.</p>}
+        {rows.map((row) => (
+          <div
+            className="graph-row"
+            key={row.commit.oid}
+            onMouseEnter={() => setHoveredLane(row.lane)}
+            onMouseLeave={() => setHoveredLane(null)}
+          >
+            <GraphLane row={row} laneCount={laneCount} hoveredLane={hoveredLane} />
+            <div className="graph-msg">{row.commit.summary}</div>
+            <div className="graph-author">
+              <span className="avatar" style={{ background: laneColor(row.lane) }} />
+              {row.commit.author_name}
+            </div>
+            <div className="graph-date">{formatRelativeTime(row.commit.timestamp)}</div>
+            <div className="graph-hash num">{row.commit.short_oid}</div>
+          </div>
+        ))}
+        {loadingMore && <p className="diff-note graph-loading-more">Loading more…</p>}
+      </div>
+    </div>
+  );
 }
 
 function DiffView({ file }: { file: FileDiff | null }) {

@@ -1,4 +1,5 @@
 mod diff;
+mod git_log;
 mod worktree;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,7 +11,8 @@ pub fn run() {
             worktree::list_worktrees,
             worktree::list_branches,
             worktree::remove_worktree,
-            diff::diff_against_base
+            diff::diff_against_base,
+            git_log::git_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

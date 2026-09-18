@@ -331,6 +331,170 @@ select {
   font-size: 14px;
 }
 
+/* ---- git panel (full-width, sibling of main-row) ---- */
+
+.bottom-bar {
+  flex: 0 0 auto;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  background: var(--chrome-bg);
+  border-top: 1px solid var(--border);
+}
+
+.bottom-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.bottom-tab:hover {
+  background: var(--panel-bg);
+}
+
+.bottom-tab--active {
+  background: var(--selected-bg);
+  color: var(--text-strong);
+}
+
+.bottom-panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+  border-top: 1px solid var(--border);
+  position: relative;
+  min-height: 0;
+}
+
+.vertical-resizer {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 5;
+}
+
+.vertical-resizer:hover {
+  background: var(--border);
+}
+
+.bottom-panel-header {
+  height: 40px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.git-icon {
+  color: var(--text-dim);
+  display: flex;
+}
+
+.bp-title {
+  font-weight: 600;
+  color: var(--text-strong);
+  font-size: 12.5px;
+}
+
+.follow-badge,
+.pin-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+
+.follow-badge {
+  color: var(--green);
+  background: rgba(127, 168, 127, 0.12);
+}
+
+.pin-badge {
+  color: var(--amber);
+  background: rgba(160, 130, 86, 0.12);
+}
+
+.bottom-panel-close {
+  margin-left: auto;
+}
+
+.graph-area {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.graph-row {
+  display: grid;
+  grid-template-columns: auto 1fr 140px 96px 76px;
+  align-items: center;
+  height: 36px;
+  padding: 0 16px;
+  gap: 8px;
+}
+
+.graph-row:hover {
+  background: var(--selected-bg);
+}
+
+.graph-lane {
+  flex-shrink: 0;
+  display: block;
+}
+
+.graph-msg {
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.graph-author {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.graph-date {
+  color: var(--text-dimmer);
+  font-size: 11px;
+}
+
+.graph-hash {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  color: var(--text-dimmer);
+  font-size: 11px;
+  text-align: right;
+}
+
 .view-toggle {
   display: flex;
   border: 1px solid var(--border);
@@ -743,6 +907,12 @@ select {
 .diff-note {
   font-style: italic;
   color: var(--text-dim);
+}
+
+.graph-loading-more {
+  text-align: center;
+  padding: 8px 0;
+  font-size: 11px;
 }
 
 .diff-grid {
