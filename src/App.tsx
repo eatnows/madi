@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
@@ -139,6 +139,170 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+type BranchTreeNode = {
+  segment: string;
+  fullPath: string;
+  isBranch: boolean;
+  children: Map<string, BranchTreeNode>;
+};
+
+/** Groups branch names sharing a "/" prefix (e.g. "feature/x", "feature/y") into a tree. */
+function buildBranchTree(branches: string[]): BranchTreeNode {
+  const root: BranchTreeNode = { segment: "", fullPath: "", isBranch: false, children: new Map() };
+  for (const branch of branches) {
+    let node = root;
+    let path = "";
+    for (const part of branch.split("/")) {
+      path = path ? `${path}/${part}` : part;
+      let next = node.children.get(part);
+      if (!next) {
+        next = { segment: part, fullPath: path, isBranch: false, children: new Map() };
+        node.children.set(part, next);
+      }
+      node = next;
+    }
+    node.isBranch = true;
+  }
+  return root;
+}
+
+function BranchTreeOptions({
+  node,
+  depth,
+  value,
+  onPick,
+}: {
+  node: BranchTreeNode;
+  depth: number;
+  value: string;
+  onPick: (branch: string) => void;
+}) {
+  const children = [...node.children.values()].sort((a, b) => a.segment.localeCompare(b.segment));
+  return (
+    <>
+      {children.map((child) => (
+        <div key={child.fullPath}>
+          {child.children.size > 0 ? (
+            <div className="searchable-select-folder" style={{ paddingLeft: 8 + depth * 12 }}>
+              {child.segment}/
+            </div>
+          ) : (
+            <BranchOption fullPath={child.fullPath} depth={depth} value={value} onPick={onPick} />
+          )}
+          {child.children.size > 0 && (
+            <BranchTreeOptions node={child} depth={depth + 1} value={value} onPick={onPick} />
+          )}
+          {child.children.size > 0 && child.isBranch && (
+            <BranchOption fullPath={child.fullPath} depth={depth + 1} value={value} onPick={onPick} />
+          )}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function BranchOption({
+  fullPath,
+  depth,
+  value,
+  onPick,
+}: {
+  fullPath: string;
+  depth: number;
+  value: string;
+  onPick: (branch: string) => void;
+}) {
+  const label = fullPath.split("/").pop();
+  return (
+    <div
+      className={"searchable-select-option" + (fullPath === value ? " searchable-select-option--selected" : "")}
+      style={{ paddingLeft: 8 + depth * 12 }}
+      onClick={() => onPick(fullPath)}
+    >
+      {label}
+    </div>
+  );
+}
+
+/** A branch picker with search-to-filter and "/"-prefix folder grouping — a native <select>
+ * can't scroll-search or group, and this repo's branch lists can get long. */
+function BranchPicker({
+  value,
+  branches,
+  onChange,
+}: {
+  value: string;
+  branches: string[];
+  onChange: (branch: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  function pick(branch: string) {
+    onChange(branch);
+    setOpen(false);
+  }
+
+  const filtered = query ? branches.filter((b) => b.toLowerCase().includes(query.toLowerCase())) : null;
+
+  return (
+    <div className="searchable-select" ref={rootRef}>
+      <button
+        type="button"
+        className="searchable-select-trigger"
+        onClick={() => {
+          setOpen((o) => !o);
+          setQuery("");
+        }}
+      >
+        {value}
+      </button>
+      {open && (
+        <div className="searchable-select-popover">
+          <input
+            className="searchable-select-search"
+            autoFocus
+            placeholder="Search branches…"
+            value={query}
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && filtered && filtered.length > 0) pick(filtered[0]);
+            }}
+          />
+          <div className="searchable-select-list">
+            {filtered ? (
+              filtered.length === 0 ? (
+                <div className="searchable-select-empty">No matches</div>
+              ) : (
+                filtered.map((b) => <BranchOption key={b} fullPath={b} depth={0} value={value} onPick={pick} />)
+              )
+            ) : (
+              <BranchTreeOptions node={buildBranchTree(branches)} depth={0} value={value} onPick={pick} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RefreshIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -205,6 +369,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("sidebar");
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; worktree: WorktreeInfo } | null>(null);
 
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
   const [filePanelWidth, setFilePanelWidth] = useState(260);
@@ -291,6 +456,28 @@ function App() {
         setSelectedWorktree(updated);
         loadDiff(updated, branch);
       }
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function removeWorktree(wt: WorktreeInfo) {
+    const ok = window.confirm(
+      `Remove worktree "${wt.name}" (${wt.branch ?? "detached"})?\n\nThis deletes its working directory. Uncommitted changes will be lost.`,
+    );
+    if (!ok) return;
+    setError(null);
+    try {
+      await invoke("remove_worktree", { repoPath, worktreePath: wt.path });
+      if (selectedWorktree?.path === wt.path) {
+        setSelectedWorktree(null);
+        setDiff(null);
+        setSelectedFile(null);
+      }
+      const pins = Object.fromEntries(Object.entries(baseBranches).filter(([path]) => path !== wt.path));
+      setBaseBranches(pins);
+      savePinnedBaseBranches(repoPath, pins);
+      await refreshWorktrees(repoPath, pins);
     } catch (e) {
       setError(String(e));
     }
@@ -388,22 +575,20 @@ function App() {
                         "list-row" + (selectedWorktree?.path === wt.path ? " list-row--selected" : "")
                       }
                       onClick={() => selectWorktree(wt)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        if (!wt.is_main) setContextMenu({ x: e.clientX, y: e.clientY, worktree: wt });
+                      }}
                     >
                       <div className="list-row-title">{wt.name}</div>
                       <div className="list-row-sub">{wt.branch ?? "(detached)"}</div>
                       <div className="list-row-base" onClick={(e) => e.stopPropagation()}>
                         <span className="list-row-base-label">base:</span>
-                        <select
-                          className="base-select"
+                        <BranchPicker
                           value={baseBranches[wt.path] ?? ""}
-                          onChange={(e) => changeWorktreeBase(wt, e.currentTarget.value)}
-                        >
-                          {branches.map((b) => (
-                            <option key={b} value={b}>
-                              {b}
-                            </option>
-                          ))}
-                        </select>
+                          branches={branches}
+                          onChange={(b) => changeWorktreeBase(wt, b)}
+                        />
                         {wt.ahead !== null && wt.behind !== null && (
                           <span className="list-row-status">
                             {wt.ahead === 0 && wt.behind === 0 ? "up to date" : `↑${wt.ahead} ↓${wt.behind}`}
@@ -524,6 +709,24 @@ function App() {
             </>
           )}
         </div>
+      )}
+
+      {contextMenu && (
+        <>
+          <div className="context-menu-overlay" onClick={() => setContextMenu(null)} />
+          <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+            <button
+              type="button"
+              className="context-menu-item context-menu-item--danger"
+              onClick={() => {
+                removeWorktree(contextMenu.worktree);
+                setContextMenu(null);
+              }}
+            >
+              Remove worktree…
+            </button>
+          </div>
+        </>
       )}
     </div>
   );

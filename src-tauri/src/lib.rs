@@ -9,6 +9,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             worktree::list_worktrees,
             worktree::list_branches,
+            worktree::remove_worktree,
             diff::diff_against_base
         ])
         .run(tauri::generate_context!())

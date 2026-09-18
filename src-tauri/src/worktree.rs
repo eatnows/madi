@@ -91,6 +91,34 @@ pub fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Removes a linked worktree (its admin metadata and, since a mismatched checkout state
+/// shouldn't block deletion, its working directory as well) by path. Refuses to touch the
+/// main working directory, which isn't a "worktree" you can remove this way.
+#[tauri::command]
+pub fn remove_worktree(repo_path: String, worktree_path: String) -> Result<(), String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
+    let target = std::fs::canonicalize(&worktree_path).unwrap_or_else(|_| worktree_path.clone().into());
+
+    if let Some(workdir) = repo.workdir() {
+        let canonical_workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+        if canonical_workdir == target {
+            return Err("refusing to remove the main working directory".to_string());
+        }
+    }
+
+    for name in repo.worktrees().map_err(|e| e.to_string())?.iter().flatten().flatten() {
+        let wt = repo.find_worktree(name).map_err(|e| e.to_string())?;
+        let wt_path = std::fs::canonicalize(wt.path()).unwrap_or_else(|_| wt.path().to_path_buf());
+        if wt_path == target {
+            let mut opts = git2::WorktreePruneOptions::new();
+            opts.valid(true).working_tree(true);
+            return wt.prune(Some(&mut opts)).map_err(|e| e.to_string());
+        }
+    }
+
+    Err(format!("no worktree found at {worktree_path}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +149,55 @@ mod tests {
         let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
         let branches = list_branches(repo_root).expect("list_branches should succeed");
         assert!(branches.iter().any(|b| b == "main"));
+    }
+
+    #[test]
+    fn refuses_to_remove_the_main_worktree() {
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let main_workdir = Repository::open(&repo_root).unwrap().workdir().unwrap().to_string_lossy().into_owned();
+        let err = remove_worktree(repo_root, main_workdir).unwrap_err();
+        assert!(err.contains("main working directory"));
+    }
+
+    #[test]
+    fn removes_a_linked_worktree_and_its_directory() {
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let branch_name = "test/remove-worktree-tmp";
+        let scratch_dir = std::env::temp_dir().join(format!(
+            "worktree-viewer-remove-test-{}",
+            std::process::id()
+        ));
+        // Defensive cleanup in case a previous failed run left these behind.
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&scratch_dir)
+            .current_dir(&repo_root)
+            .status();
+        let _ = std::process::Command::new("git")
+            .args(["branch", "-D", branch_name])
+            .current_dir(&repo_root)
+            .status();
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+
+        let status = std::process::Command::new("git")
+            .args(["worktree", "add", "-b", branch_name])
+            .arg(&scratch_dir)
+            .current_dir(&repo_root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let result = remove_worktree(repo_root.clone(), scratch_dir.to_string_lossy().into_owned());
+
+        std::process::Command::new("git")
+            .args(["branch", "-D", branch_name])
+            .current_dir(&repo_root)
+            .status()
+            .unwrap();
+
+        result.expect("remove_worktree should succeed");
+        assert!(!scratch_dir.exists());
+        let worktrees = list_worktrees(repo_root, HashMap::new()).unwrap();
+        assert!(!worktrees.iter().any(|w| w.path.contains("worktree-viewer-remove-test")));
     }
 }
