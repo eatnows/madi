@@ -246,6 +246,12 @@ function VerticalResizer({ onResize }: { onResize: (deltaY: number) => void }) {
 const GRAPH_PAGE_SIZE = 100;
 const LANE_WIDTH = 16;
 const LANE_X0 = 10;
+// ponytail: fixed rather than derived from the loaded commits' real max lane count — sizing the
+// column to the data made the message/author/date columns visibly shift every time pagination
+// loaded a page with more (or fewer) concurrent branches. A rare graph busier than this still
+// draws correctly (SVG isn't clipped), it just extends past its own column into the message text.
+const GRAPH_MAX_LANES = 8;
+const GRAPH_LANE_COLUMN_WIDTH = GRAPH_MAX_LANES * LANE_WIDTH + LANE_X0;
 const LANE_COLORS = ["#a08256", "#7fa87f", "#a87f7f", "#8a8fbf", "#bf8fbf", "#8fb0bf"];
 
 function laneColor(lane: number) {
@@ -273,16 +279,13 @@ function formatRelativeTime(timestampSeconds: number): string {
  * bounding box), so hovering highlights exactly the line under the cursor. */
 function GraphLane({
   row,
-  laneCount,
   hoveredLane,
   onHoverLane,
 }: {
   row: GraphRow;
-  laneCount: number;
   hoveredLane: number | null;
   onHoverLane: (lane: number | null) => void;
 }) {
-  const width = laneCount * LANE_WIDTH + LANE_X0;
   const x = (lane: number) => LANE_X0 + lane * LANE_WIDTH;
   const opacity = (...lanes: number[]) => (hoveredLane === null || lanes.includes(hoveredLane) ? 1 : 0.22);
   const hitProps = (lane: number) => ({
@@ -293,7 +296,7 @@ function GraphLane({
     onMouseLeave: () => onHoverLane(null),
   });
   return (
-    <svg width={width} height={36} className="graph-lane">
+    <svg width={GRAPH_LANE_COLUMN_WIDTH} height={36} className="graph-lane" style={{ overflow: "visible" }}>
       {row.passThrough.map((lane) => (
         <g key={`p${lane}`}>
           <line x1={x(lane)} y1={0} x2={x(lane)} y2={36} stroke={laneColor(lane)} strokeWidth={2} opacity={opacity(lane)} pointerEvents="none" />
@@ -603,15 +606,6 @@ function CheckIcon() {
   return (
     <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3.5 8.5l3 3 6-7" />
-    </svg>
-  );
-}
-
-function GearIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="8" cy="8" r="2.3" />
-      <path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.1 3.9l-1.1 1.1M5 10l-1.1 1.1M12.1 12.1L11 11M5 6L3.9 4.9" />
     </svg>
   );
 }
@@ -1082,15 +1076,6 @@ function App() {
               <LayoutFocusedIcon />
             </button>
           </div>
-          <button
-            type="button"
-            className={"icon-btn" + (settingsOpen ? " icon-btn--open" : "")}
-            onClick={() => setSettingsOpen(true)}
-            title="Settings (⌘,)"
-            aria-label="Settings"
-          >
-            <GearIcon />
-          </button>
         </div>
         {error && <span className="topbar-error">{error}</span>}
       </div>
@@ -1416,7 +1401,18 @@ function GitPanel({
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) loadMore();
   }
 
+  function closeCommitDetail() {
+    setSelectedOid(null);
+    setCommitFiles(null);
+    setCommitFilesError(null);
+    setSelectedCommitFile(null);
+  }
+
   function selectCommit(oid: string) {
+    if (oid === selectedOid) {
+      closeCommitDetail();
+      return;
+    }
     setSelectedOid(oid);
     setCommitFiles(null);
     setCommitFilesError(null);
@@ -1430,9 +1426,6 @@ function GitPanel({
   }
 
   const rows = computeGraphRows(commits);
-  // Shared across every row so the lane columns line up instead of each row sizing itself to
-  // its own local lane count (which made the message/author/date columns jitter left-right).
-  const laneCount = rows.reduce((max, r) => Math.max(max, r.maxLane + 1), 1);
   const selectedCommit = selectedOid ? commits.find((c) => c.oid === selectedOid) ?? null : null;
 
   return (
@@ -1463,7 +1456,7 @@ function GitPanel({
                 key={row.commit.oid}
                 onClick={() => selectCommit(row.commit.oid)}
               >
-                <GraphLane row={row} laneCount={laneCount} hoveredLane={hoveredLane} onHoverLane={setHoveredLane} />
+                <GraphLane row={row} hoveredLane={hoveredLane} onHoverLane={setHoveredLane} />
                 <div className="graph-msg">{row.commit.summary}</div>
                 <div className="graph-author">
                   <span className="avatar" style={{ background: laneColor(row.lane) }} />
@@ -1475,21 +1468,25 @@ function GitPanel({
             ))}
             {loadingMore && <p className="diff-note graph-loading-more">Loading more…</p>}
           </div>
-          <div className="commit-message-detail">
-            {selectedCommit ? (
-              <>
-                <div className="commit-message-summary">{selectedCommit.summary}</div>
-                {selectedCommit.body.trim() && <pre className="commit-message-body">{selectedCommit.body.trim()}</pre>}
-                <div className="commit-message-meta">
-                  {selectedCommit.author_name} &lt;{selectedCommit.author_email}&gt; ·{" "}
-                  {new Date(selectedCommit.timestamp * 1000).toLocaleString()} ·{" "}
-                  <span className="num">{selectedCommit.oid}</span>
-                </div>
-              </>
-            ) : (
-              <p className="diff-note">Select a commit to see its full message.</p>
-            )}
-          </div>
+          {selectedCommit && (
+            <div className="commit-message-detail">
+              <button
+                type="button"
+                className="icon-btn commit-message-close"
+                onClick={closeCommitDetail}
+                aria-label="Close commit detail"
+              >
+                <CloseIcon />
+              </button>
+              <div className="commit-message-summary">{selectedCommit.summary}</div>
+              {selectedCommit.body.trim() && <pre className="commit-message-body">{selectedCommit.body.trim()}</pre>}
+              <div className="commit-message-meta">
+                {selectedCommit.author_name} &lt;{selectedCommit.author_email}&gt; ·{" "}
+                {new Date(selectedCommit.timestamp * 1000).toLocaleString()} ·{" "}
+                <span className="num">{selectedCommit.oid}</span>
+              </div>
+            </div>
+          )}
         </div>
 
         <Resizer onResize={(dx) => setGraphPaneWidth((w) => clamp(w + dx, 300, 800))} />
