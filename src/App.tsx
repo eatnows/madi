@@ -410,7 +410,7 @@ function GearIcon() {
 }
 
 type FontChoice = "system" | "pretendard";
-const FONT_STORAGE_KEY = "worktree-viewer:font";
+const FONT_STORAGE_KEY = "maditor:font";
 
 function loadFontChoice(): FontChoice {
   try {
@@ -482,7 +482,7 @@ function defaultBranchOf(branches: string[]): string {
 }
 
 function baseBranchesStorageKey(repoPath: string) {
-  return `worktree-viewer:base-branches:${repoPath}`;
+  return `maditor:base-branches:${repoPath}`;
 }
 
 function loadPinnedBaseBranches(repoPath: string): Record<string, string> {
@@ -648,7 +648,7 @@ function App() {
     <div className="app-shell">
       <div className="topbar">
         <div className="breadcrumb">
-          <span className="breadcrumb-brand">worktree-viewer</span>
+          <span className="breadcrumb-brand">maditor</span>
           {projectName && (
             <>
               <span className="breadcrumb-sep">/</span>
