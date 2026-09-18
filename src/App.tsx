@@ -583,6 +583,26 @@ function savePinnedBaseBranches(repoPath: string, map: Record<string, string>) {
   }
 }
 
+const PROJECTS_STORAGE_KEY = "maditor:projects";
+const LAST_PROJECT_STORAGE_KEY = "maditor:last-project";
+
+function loadProjects(): string[] {
+  try {
+    const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveProjects(paths: string[]) {
+  try {
+    localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(paths));
+  } catch {
+    // best-effort
+  }
+}
+
 type ViewMode = "sidebar" | "focused";
 
 function App() {
@@ -600,6 +620,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("sidebar");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; worktree: WorktreeInfo } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projects, setProjects] = useState<string[]>(() => loadProjects());
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -610,6 +631,19 @@ function App() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Reopen whichever project was active last time, on launch only.
+  useEffect(() => {
+    const last = localStorage.getItem(LAST_PROJECT_STORAGE_KEY);
+    if (!last) return;
+    setProjects((prev) => {
+      const next = prev.includes(last) ? prev : [...prev, last];
+      saveProjects(next);
+      return next;
+    });
+    scan(last);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [worktreePanelWidth, setWorktreePanelWidth] = useState(248);
@@ -647,6 +681,11 @@ function App() {
 
       setBaseBranches(pins);
       savePinnedBaseBranches(path, pins);
+      try {
+        localStorage.setItem(LAST_PROJECT_STORAGE_KEY, path);
+      } catch {
+        // best-effort
+      }
     } catch (e) {
       setWorktrees([]);
       setBranches([]);
@@ -656,7 +695,13 @@ function App() {
 
   async function pickProject() {
     const dir = await open({ directory: true, multiple: false, title: "Open a git repository" });
-    if (typeof dir === "string") scan(dir);
+    if (typeof dir !== "string") return;
+    setProjects((prev) => {
+      const next = prev.includes(dir) ? prev : [...prev, dir];
+      saveProjects(next);
+      return next;
+    });
+    scan(dir);
   }
 
   function rescan() {
@@ -799,7 +844,20 @@ function App() {
       {viewMode === "sidebar" ? (
         <div className="main-row">
           <div className="rail">
-            {projectName && <div className="rail-tile rail-tile--active">{projectName[0]?.toUpperCase()}</div>}
+            {projects.map((path) => {
+              const name = path.split("/").filter(Boolean).pop() ?? path;
+              return (
+                <button
+                  key={path}
+                  type="button"
+                  className={"rail-tile" + (path === repoPath ? " rail-tile--active" : "")}
+                  onClick={() => scan(path)}
+                  title={path}
+                >
+                  {name[0]?.toUpperCase()}
+                </button>
+              );
+            })}
             <button
               type="button"
               className="rail-tile rail-tile--add"
@@ -896,8 +954,16 @@ function App() {
           ) : (
             <>
               <div className="focused-subbar">
-                <select className="focused-select" value={projectName} disabled>
-                  <option value={projectName}>{projectName}</option>
+                <select
+                  className="focused-select"
+                  value={repoPath}
+                  onChange={(e) => scan(e.currentTarget.value)}
+                >
+                  {projects.map((path) => (
+                    <option key={path} value={path}>
+                      {path.split("/").filter(Boolean).pop() ?? path}
+                    </option>
+                  ))}
                 </select>
                 <select
                   className="focused-select"
