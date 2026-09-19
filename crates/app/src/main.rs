@@ -2,8 +2,6 @@ mod app;
 mod config;
 mod diff_view;
 mod editor;
-mod graph;
-mod picker;
 mod scroll;
 mod text_input;
 mod theme;

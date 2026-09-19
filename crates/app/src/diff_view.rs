@@ -1,12 +1,11 @@
-//! Diff rows for both layouts: side-by-side (deleted/inserted lines paired into old|new columns)
-//! and unified (one column, for narrow panes), plus how a row is drawn.
+//! Drawing a diff: side-by-side or unified rows, responsive to the room available.
 use std::{ops::Range, rc::Rc};
 
 use gpui::{
     div, prelude::*, px, uniform_list, AnyElement, ElementId, HighlightStyle, IntoElement, Rgba,
     ScrollHandle, SharedString, StyledText, UniformListScrollHandle,
 };
-use maditor_git::diff::DiffLine;
+use maditor_git::diff_layout::{Cell, DiffLayout, Row, UnifiedRow};
 
 use crate::{scroll::axis_locked, theme::*};
 
@@ -17,167 +16,17 @@ pub const SPLIT_MIN_WIDTH: f32 = 760.0;
 const CHAR_W: f32 = 7.3;
 const GUTTER_W: f32 = 44.0;
 
-pub struct Cell {
-    lineno: Option<usize>,
-    tag: &'static str,
-    text: SharedString,
-    emphasis: Vec<Range<usize>>,
+/// Pixel width the diff needs so its longest line isn't clipped (a monospace estimate).
+pub fn width(layout: &DiffLayout, unified: bool) -> f32 {
+    let text = layout.widest_line(unified) as f32 * CHAR_W;
+    if unified { 2.0 * GUTTER_W + 24.0 + text + 24.0 } else { 2.0 * (GUTTER_W + text + 24.0) }
 }
 
-pub enum Row {
-    Gap,
-    Pair(Option<Cell>, Option<Cell>),
-}
-
-pub enum UnifiedRow {
-    Gap,
-    Line { old: Option<usize>, new: Option<usize>, tag: &'static str, text: SharedString, emphasis: Vec<Range<usize>> },
-}
-
-/// One file's diff in both layouts, built once so switching layout on resize is free.
-#[derive(Default)]
-pub struct DiffData {
-    split: Vec<Row>,
-    unified: Vec<UnifiedRow>,
-    split_width: f32,
-    unified_width: f32,
-}
-
-fn text_and_emphasis(line: &DiffLine) -> (String, Vec<Range<usize>>) {
-    let mut text = String::new();
-    let mut emphasis = Vec::new();
-    for seg in &line.segments {
-        let start = text.len();
-        text.push_str(&seg.text);
-        if seg.emphasized {
-            emphasis.push(start..text.len());
-        }
-    }
-    (text, emphasis)
-}
-
-fn cell_of(line: &DiffLine, new_side: bool) -> Cell {
-    let (text, emphasis) = text_and_emphasis(line);
-    Cell {
-        lineno: if new_side { line.new_lineno } else { line.old_lineno },
-        tag: line.tag,
-        text: text.into(),
-        emphasis,
-    }
-}
-
-/// Pairs delete/insert runs side by side so they render as aligned old|new columns.
-fn build_split(lines: &[DiffLine]) -> Vec<Row> {
-    let mut rows = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = &lines[i];
-        match line.tag {
-            "gap" => {
-                rows.push(Row::Gap);
-                i += 1;
-            }
-            "equal" => {
-                rows.push(Row::Pair(Some(cell_of(line, false)), Some(cell_of(line, true))));
-                i += 1;
-            }
-            _ => {
-                let mut deletes = Vec::new();
-                while i < lines.len() && lines[i].tag == "delete" {
-                    deletes.push(&lines[i]);
-                    i += 1;
-                }
-                let mut inserts = Vec::new();
-                while i < lines.len() && lines[i].tag == "insert" {
-                    inserts.push(&lines[i]);
-                    i += 1;
-                }
-                for k in 0..deletes.len().max(inserts.len()) {
-                    rows.push(Row::Pair(
-                        deletes.get(k).map(|l| cell_of(l, false)),
-                        inserts.get(k).map(|l| cell_of(l, true)),
-                    ));
-                }
-            }
-        }
-    }
-    rows
-}
-
-fn build_unified(lines: &[DiffLine]) -> Vec<UnifiedRow> {
-    lines
-        .iter()
-        .map(|line| {
-            if line.tag == "gap" {
-                return UnifiedRow::Gap;
-            }
-            let (text, emphasis) = text_and_emphasis(line);
-            UnifiedRow::Line {
-                old: line.old_lineno,
-                new: line.new_lineno,
-                tag: line.tag,
-                text: text.into(),
-                emphasis,
-            }
-        })
-        .collect()
-}
-
-/// Monospace column count, wide (CJK) glyphs as two.
-fn columns(text: &str) -> usize {
-    text.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
-}
-
-impl DiffData {
-    pub fn new(lines: &[DiffLine]) -> Self {
-        let split = build_split(lines);
-        let unified = build_unified(lines);
-        let widest_half = split
-            .iter()
-            .filter_map(|row| match row {
-                Row::Pair(l, r) => Some(
-                    [l, r].iter().filter_map(|c| c.as_ref()).map(|c| columns(&c.text)).max().unwrap_or(0),
-                ),
-                Row::Gap => None,
-            })
-            .max()
-            .unwrap_or(0);
-        let widest_line = unified
-            .iter()
-            .filter_map(|row| match row {
-                UnifiedRow::Line { text, .. } => Some(columns(text)),
-                UnifiedRow::Gap => None,
-            })
-            .max()
-            .unwrap_or(0);
-        Self {
-            split,
-            unified,
-            // Width the layout needs so its longest line isn't clipped (estimated once per file).
-            split_width: 2.0 * (GUTTER_W + widest_half as f32 * CHAR_W + 24.0),
-            unified_width: 2.0 * GUTTER_W + 24.0 + widest_line as f32 * CHAR_W + 24.0,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.split.is_empty()
-    }
-
-    pub fn len(&self, unified: bool) -> usize {
-        if unified { self.unified.len() } else { self.split.len() }
-    }
-
-    pub fn width(&self, unified: bool) -> f32 {
-        if unified { self.unified_width } else { self.split_width }
-    }
-
-    pub fn render_row(&self, unified: bool, ix: usize) -> AnyElement {
-        if unified {
-            render_unified_row(&self.unified[ix]).into_any_element()
-        } else {
-            render_split_row(&self.split[ix]).into_any_element()
-        }
+fn render_row(layout: &DiffLayout, unified: bool, ix: usize) -> AnyElement {
+    if unified {
+        render_unified_row(&layout.unified[ix]).into_any_element()
+    } else {
+        render_split_row(&layout.split[ix]).into_any_element()
     }
 }
 
@@ -186,22 +35,22 @@ impl DiffData {
 /// lines longer than the pane, vertically through a virtualized list.
 pub fn diff_view(
     id: impl Into<ElementId>,
-    data: Rc<DiffData>,
+    data: Rc<DiffLayout>,
     vscroll: &UniformListScrollHandle,
     hscroll: &ScrollHandle,
     available_width: f32,
 ) -> impl IntoElement {
     let id: ElementId = id.into();
     let unified = available_width < SPLIT_MIN_WIDTH;
-    let (count, width) = (data.len(unified), data.width(unified));
+    let (count, px_width) = (data.len(unified), width(&data, unified));
     axis_locked(div().id(id.clone()).flex_1().min_w_0().bg(BG()).overflow_x_scroll())
         .track_scroll(hscroll)
         .child(
             axis_locked(uniform_list(id, count, move |range: Range<usize>, _, _| {
-                range.map(|ix| data.render_row(unified, ix)).collect::<Vec<_>>()
+                range.map(|ix| render_row(&data, unified, ix)).collect::<Vec<_>>()
             }))
             .track_scroll(vscroll.clone())
-            .min_w(px(width))
+            .min_w(px(px_width))
             .h_full()
             .font_family(MONO)
             .text_size(px(12.)),
@@ -216,7 +65,7 @@ fn colors_for(tag: Option<&str>) -> (Option<Rgba>, Rgba, Rgba, Rgba) {
     }
 }
 
-fn text_element(text: &SharedString, emphasis: &[Range<usize>], fg: Rgba, strong_bg: Rgba, strong_fg: Rgba) -> impl IntoElement {
+fn text_element(text: &std::sync::Arc<str>, emphasis: &[Range<usize>], fg: Rgba, strong_bg: Rgba, strong_fg: Rgba) -> impl IntoElement {
     let style = HighlightStyle {
         color: Some(strong_fg.into()),
         background_color: Some(strong_bg.into()),
@@ -226,7 +75,7 @@ fn text_element(text: &SharedString, emphasis: &[Range<usize>], fg: Rgba, strong
     div()
         .whitespace_nowrap()
         .text_color(fg)
-        .child(StyledText::new(text.clone()).with_highlights(highlights))
+        .child(StyledText::new(SharedString::from(text.clone())).with_highlights(highlights))
 }
 
 fn gutter(n: Option<usize>) -> impl IntoElement {
@@ -289,44 +138,5 @@ fn render_unified_row(row: &UnifiedRow) -> impl IntoElement {
                 .child(div().w(px(16.)).flex_none().text_color(fg).child(marker))
                 .child(text_element(text, emphasis, fg, strong_bg, strong_fg))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maditor_git::diff::Segment;
-
-    fn line(tag: &'static str, old: Option<usize>, new: Option<usize>, text: &str) -> DiffLine {
-        DiffLine {
-            tag,
-            old_lineno: old,
-            new_lineno: new,
-            segments: vec![Segment { text: text.into(), emphasized: false }],
-            skipped: None,
-        }
-    }
-
-    #[test]
-    fn split_pairs_a_replaced_line_while_unified_keeps_both_in_order() {
-        let lines = [
-            line("equal", Some(1), Some(1), "keep"),
-            line("delete", Some(2), None, "old"),
-            line("insert", None, Some(2), "new"),
-        ];
-        let data = DiffData::new(&lines);
-        assert_eq!(data.len(false), 2, "delete+insert share one split row");
-        assert_eq!(data.len(true), 3, "unified lists every line");
-    }
-
-    #[test]
-    fn width_grows_with_the_longest_line_and_counts_cjk_double() {
-        let short = DiffData::new(&[line("equal", Some(1), Some(1), "abc")]);
-        let long = DiffData::new(&[line("equal", Some(1), Some(1), &"x".repeat(200))]);
-        let cjk = DiffData::new(&[line("equal", Some(1), Some(1), &"가".repeat(100))]);
-        assert!(long.width(false) > short.width(false));
-        assert!(cjk.width(true) > DiffData::new(&[line("equal", Some(1), Some(1), &"x".repeat(100))]).width(true));
-        // Unified needs two gutters in one column; split shows two full halves.
-        assert!(long.width(false) > long.width(true));
     }
 }

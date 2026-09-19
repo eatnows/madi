@@ -1,8 +1,8 @@
-mod workspace;
 mod chrome;
 mod git_panel;
 mod picker_view;
 mod sidebar;
+mod workspace;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -10,22 +10,21 @@ use std::{
 };
 
 use gpui::{
-    actions, div, prelude::*, px, App, Context, Entity, FocusHandle,
-    Focusable, IntoElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Subscription,
-    UniformListScrollHandle, Window,
+    actions, div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, IntoElement,
+    KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions, Pixels, Point,
+    ScrollHandle, SharedString, Subscription, UniformListScrollHandle, Window,
 };
 use maditor_git::{
+    branches::{self, BranchRow},
     diff::{self, FileDiff},
+    diff_layout::DiffLayout,
     git_log::CommitInfo,
+    graph::GraphRow,
     worktree::{self, RepoStatus, WorktreeInfo},
 };
 
 use crate::{
     config::{Appearance, Config},
-    diff_view::DiffData,
-    graph::GraphRow,
-    picker,
     scroll::{axis_locked, scroll_to_top},
     text_input::TextInput,
     theme::*,
@@ -191,7 +190,7 @@ pub struct Maditor {
     selected_oid: Option<String>,
     detail_collapsed: bool,
     commit_files: Vec<FileDiff>,
-    commit_diff: Rc<DiffData>,
+    commit_diff: Rc<DiffLayout>,
     cdiff_scroll: UniformListScrollHandle,
     cdiff_hscroll: ScrollHandle,
     selected_cfile: Option<usize>,
@@ -495,9 +494,9 @@ impl Maditor {
         }
     }
 
-    fn picker_rows(&self, cx: &App) -> Vec<picker::PickerRow> {
+    fn picker_rows(&self, cx: &App) -> Vec<BranchRow> {
         match &self.picker {
-            Some(p) => picker::flatten(&self.branches, &p.collapsed, p.input.read(cx).content()),
+            Some(p) => branches::flatten(&self.branches, &p.collapsed, p.input.read(cx).content()),
             None => Vec::new(),
         }
     }
@@ -506,7 +505,7 @@ impl Maditor {
     fn picker_activate(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(picked) = self.picker_rows(cx).into_iter().nth(row) else { return };
         match picked {
-            picker::PickerRow::Folder { full_path, .. } => {
+            BranchRow::Folder { full_path, .. } => {
                 if let Some(p) = &mut self.picker {
                     if !p.collapsed.remove(&full_path) {
                         p.collapsed.insert(full_path);
@@ -514,7 +513,7 @@ impl Maditor {
                 }
                 cx.notify();
             }
-            picker::PickerRow::Option { full_path, .. } => {
+            BranchRow::Branch { full_path, .. } => {
                 let Some(target) = self.picker.as_ref().map(|p| p.target.clone()) else { return };
                 self.close_picker(window, cx);
                 match target {

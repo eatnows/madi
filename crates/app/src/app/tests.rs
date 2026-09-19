@@ -132,7 +132,7 @@ fn picking_a_base_branch_pins_it_and_refreshes_ahead_behind(cx: &mut TestAppCont
     let feature_row = view.read_with(cx, |m, cx| {
         m.picker_rows(cx)
             .iter()
-            .position(|r| matches!(r, picker::PickerRow::Option { full_path, .. } if full_path == "feature"))
+            .position(|r| matches!(r, BranchRow::Branch { full_path, .. } if full_path == "feature"))
             .unwrap()
     });
     view.update_in(cx, |m, window, cx| m.picker_activate(feature_row, window, cx));
@@ -177,7 +177,7 @@ fn graph_follows_the_worktree_until_pinned(cx: &mut TestAppContext) {
     let main_row = view.read_with(cx, |m, cx| {
         m.picker_rows(cx)
             .iter()
-            .position(|r| matches!(r, picker::PickerRow::Option { full_path, .. } if full_path == "main"))
+            .position(|r| matches!(r, BranchRow::Branch { full_path, .. } if full_path == "main"))
             .unwrap()
     });
     view.update_in(cx, |m, window, cx| m.picker_activate(main_row, window, cx));
@@ -405,7 +405,7 @@ fn diff_tab_scrolls_both_ways_independently_and_keeps_its_position_per_tab(cx: &
             (d.hscroll.offset(), d.vscroll.0.borrow().base_handle.offset())
         })
     };
-    assert!(view.read_with(cx, |m, _| active_diff(m).unwrap().data.width(false)) > 1400., "content is wider than the pane");
+    assert!(view.read_with(cx, |m, _| crate::diff_view::width(&active_diff(m).unwrap().data, false)) > 1400., "content is wider than the pane");
 
     wheel(cx, over_diff, -300., 0.);
     let (side, list) = offsets(cx);

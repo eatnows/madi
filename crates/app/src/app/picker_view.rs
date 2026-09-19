@@ -1,7 +1,8 @@
 use gpui::{div, prelude::*, px, Context, IntoElement, MouseButton, Window};
 
 use super::{Maditor, PickerCancel, PickerConfirm, PickerTarget, SelectNext, SelectPrev};
-use crate::{picker::PickerRow, theme::*};
+use crate::theme::*;
+use maditor_git::branches::BranchRow;
 
 const WIDTH: f32 = 260.0;
 const LIST_MAX_H: f32 = 300.0;
@@ -34,14 +35,14 @@ impl Maditor {
                 .hover(|d| d.bg(SELECTED()))
                 .on_click(cx.listener(move |this, _, window, cx| this.picker_activate(i, window, cx)));
             match row {
-                PickerRow::Folder { segment, depth, full_path } => {
+                BranchRow::Folder { segment, depth, full_path } => {
                     let open = !p.collapsed.contains(&full_path) || !p.last_query.is_empty();
                     base.pl(px(8. + depth as f32 * 14.))
                         .text_color(TEXT_DIM())
                         .child(if open { "▾" } else { "▸" })
                         .child(segment)
                 }
-                PickerRow::Option { full_path, depth } => {
+                BranchRow::Branch { full_path, depth } => {
                     let label = full_path.rsplit('/').next().unwrap_or(&full_path).to_string();
                     let selected = full_path == current;
                     base.pl(px(8. + depth as f32 * 14.))

@@ -7,15 +7,17 @@ use gpui::{
     CursorStyle, Corners, Hsla, IntoElement, MouseButton, MouseMoveEvent, PathBuilder, Pixels,
     Point, ScrollStrategy, Window,
 };
-use maditor_git::{diff, git_log};
+use maditor_git::{
+    diff,
+    diff_layout::DiffLayout,
+    git_log,
+    graph::{compute_rows, GraphRow},
+    time::relative as relative_time,
+};
 
 use super::{Maditor, PickerTarget, Resize, SelectNext, SelectPrev, GRAPH_PAGE};
 use crate::scroll::{axis_locked, list_scroll_to_top, scroll_to_top};
-use crate::{
-    diff_view::{diff_view, DiffData},
-    graph::{self, GraphRow},
-    theme::*,
-};
+use crate::{diff_view::diff_view, theme::*};
 
 const ROW_H: f32 = 36.0;
 const LANE_W: f32 = 16.0;
@@ -87,7 +89,7 @@ impl Maditor {
                     Ok(commits) => {
                         this.has_more = commits.len() == GRAPH_PAGE;
                         this.commits = commits;
-                        this.graph_rows = graph::compute_rows(&this.commits);
+                        this.graph_rows = compute_rows(&this.commits);
                     }
                     Err(e) => this.error = Some(e),
                 }
@@ -119,7 +121,7 @@ impl Maditor {
                     Ok(more) => {
                         this.has_more = more.len() == GRAPH_PAGE;
                         this.commits.extend(more);
-                        this.graph_rows = graph::compute_rows(&this.commits);
+                        this.graph_rows = compute_rows(&this.commits);
                     }
                     Err(e) => this.error = Some(e),
                 }
@@ -183,7 +185,7 @@ impl Maditor {
 
     fn select_cfile(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_cfile = Some(ix);
-        self.commit_diff = std::rc::Rc::new(DiffData::new(&self.commit_files[ix].lines));
+        self.commit_diff = std::rc::Rc::new(DiffLayout::new(&self.commit_files[ix].lines));
         self.reset_cdiff_scroll();
         cx.notify();
     }
@@ -411,7 +413,7 @@ impl Maditor {
                     .flex_none()
                     .text_size(px(11.))
                     .text_color(TEXT_DIM())
-                    .child(graph::relative_time(now, commit.timestamp)),
+                    .child(relative_time(now, commit.timestamp)),
             )
             .child(
                 div()

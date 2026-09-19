@@ -1,4 +1,9 @@
-//! Git logic shared by every Maditor frontend (the native GPUI app today). No UI dependencies.
+//! Git logic shared by every part of Maditor: worktrees, diffs, history, and the shapes derived
+//! from them (graph lanes, diff layouts, branch lists). No UI dependency.
+pub mod branches;
 pub mod diff;
+pub mod diff_layout;
 pub mod git_log;
+pub mod graph;
+pub mod time;
 pub mod worktree;

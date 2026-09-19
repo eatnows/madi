@@ -1,5 +1,5 @@
-//! Branch list shaping for the picker: groups "/"-prefixed names into collapsible folders and
-//! filters by a search query. Pure, so it's unit-tested without any UI.
+//! Branch list shaping: groups "/"-prefixed names into collapsible folders and filters by a
+//! search query, as a flat list of rows a picker can show.
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Default)]
@@ -10,9 +10,9 @@ struct Node {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum PickerRow {
+pub enum BranchRow {
     Folder { full_path: String, segment: String, depth: usize },
-    Option { full_path: String, depth: usize },
+    Branch { full_path: String, depth: usize },
 }
 
 fn build_tree(branches: &[String]) -> Node {
@@ -39,7 +39,7 @@ fn has_match(node: &Node, query: &str) -> bool {
     (node.is_branch && node.full_path.to_lowercase().contains(query)) || node.children.values().any(|c| has_match(c, query))
 }
 
-fn flatten_node(node: &Node, depth: usize, collapsed: &HashSet<String>, query: &str, out: &mut Vec<PickerRow>) {
+fn flatten_node(node: &Node, depth: usize, collapsed: &HashSet<String>, query: &str, out: &mut Vec<BranchRow>) {
     let mut children: Vec<(&String, &Node)> = node.children.iter().collect();
     children.sort_by_key(|(segment, _)| segment.to_lowercase());
     for (segment, child) in children {
@@ -47,21 +47,21 @@ fn flatten_node(node: &Node, depth: usize, collapsed: &HashSet<String>, query: &
             continue;
         }
         if child.children.is_empty() {
-            out.push(PickerRow::Option { full_path: child.full_path.clone(), depth });
+            out.push(BranchRow::Branch { full_path: child.full_path.clone(), depth });
             continue;
         }
-        out.push(PickerRow::Folder { full_path: child.full_path.clone(), segment: segment.clone(), depth });
+        out.push(BranchRow::Folder { full_path: child.full_path.clone(), segment: segment.clone(), depth });
         // While searching, every folder on the way to a match stays open so results are reachable.
         if !query.is_empty() || !collapsed.contains(&child.full_path) {
             flatten_node(child, depth + 1, collapsed, query, out);
             if child.is_branch && child.full_path.to_lowercase().contains(query) {
-                out.push(PickerRow::Option { full_path: child.full_path.clone(), depth: depth + 1 });
+                out.push(BranchRow::Branch { full_path: child.full_path.clone(), depth: depth + 1 });
             }
         }
     }
 }
 
-pub fn flatten(branches: &[String], collapsed: &HashSet<String>, query: &str) -> Vec<PickerRow> {
+pub fn flatten(branches: &[String], collapsed: &HashSet<String>, query: &str) -> Vec<BranchRow> {
     let mut out = Vec::new();
     flatten_node(&build_tree(branches), 0, collapsed, &query.to_lowercase(), &mut out);
     out
@@ -75,14 +75,14 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
-    fn label(row: &PickerRow) -> String {
+    fn label(row: &BranchRow) -> String {
         match row {
-            PickerRow::Folder { full_path, depth, .. } => format!("{}{full_path}/", " ".repeat(*depth)),
-            PickerRow::Option { full_path, depth } => format!("{}{full_path}", " ".repeat(*depth)),
+            BranchRow::Folder { full_path, depth, .. } => format!("{}{full_path}/", " ".repeat(*depth)),
+            BranchRow::Branch { full_path, depth } => format!("{}{full_path}", " ".repeat(*depth)),
         }
     }
 
-    fn labels(rows: &[PickerRow]) -> Vec<String> {
+    fn labels(rows: &[BranchRow]) -> Vec<String> {
         rows.iter().map(label).collect()
     }
 

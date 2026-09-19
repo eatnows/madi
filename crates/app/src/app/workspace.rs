@@ -12,11 +12,13 @@ use gpui::{
     Subscription, UniformListScrollHandle, Window,
 };
 
+use maditor_git::diff_layout::DiffLayout;
+
 use super::{
     Confirm, ConfirmAction, Maditor, SelectNext, SelectPrev, TreeCollapse, TreeEnter, TreeExpand,
 };
 use crate::{
-    diff_view::{diff_view, DiffData},
+    diff_view::diff_view,
     editor::view::{Editor, EditorEvent},
     scroll::axis_locked,
     theme::*,
@@ -33,7 +35,7 @@ pub(super) enum TabKey {
 }
 
 pub(super) struct DiffTab {
-    pub data: Rc<DiffData>,
+    pub data: Rc<DiffLayout>,
     pub vscroll: UniformListScrollHandle,
     pub hscroll: ScrollHandle,
     pub subtitle: String,
@@ -229,7 +231,7 @@ impl Maditor {
         let title = Path::new(&file.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| file.path.clone());
         let section = if file.section == "committed" { "committed" } else { "uncommitted" };
         let body = TabBody::Diff(DiffTab {
-            data: Rc::new(DiffData::new(&file.lines)),
+            data: Rc::new(DiffLayout::new(&file.lines)),
             vscroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             subtitle: format!("{} · {section} · vs {base}", wt.name),
