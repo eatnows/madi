@@ -34,3 +34,16 @@ const fn rgb_c(hex: u32) -> Rgba {
         a: 1.0,
     }
 }
+
+pub const LANE_COLORS: [Rgba; 6] = [
+    rgb_c(0xa08256),
+    rgb_c(0x7fa87f),
+    rgb_c(0xa87f7f),
+    rgb_c(0x8a8fbf),
+    rgb_c(0xbf8fbf),
+    rgb_c(0x8fb0bf),
+];
+
+pub fn lane_color(lane: usize) -> Rgba {
+    LANE_COLORS[lane % LANE_COLORS.len()]
+}

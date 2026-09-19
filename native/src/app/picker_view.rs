@@ -11,6 +11,7 @@ impl Maditor {
         let p = self.picker.as_ref()?;
         let current = match &p.target {
             PickerTarget::WorktreeBase(path) => self.pins.get(path).cloned().unwrap_or_default(),
+            PickerTarget::GraphBranch => self.graph_branch.clone(),
         };
         let viewport = window.viewport_size();
         let left = p.anchor.x.min(viewport.width - px(WIDTH + 8.)).max(px(8.));

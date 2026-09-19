@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod diff_view;
+mod graph;
 mod picker;
 mod text_input;
 mod theme;
