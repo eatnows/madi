@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use maditor_git::diff_layout::DiffLayout;
+use maditor_project::tree::{build_tree_rows, TreeRow};
 
 use super::{
     Confirm, ConfirmAction, Maditor, SelectNext, SelectPrev, TreeCollapse, TreeEnter, TreeExpand,
@@ -64,50 +65,6 @@ pub(super) struct Workspace {
     pub active: Option<usize>,
     pub expanded: HashSet<PathBuf>,
     pub selected: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct TreeRow {
-    pub path: PathBuf,
-    pub name: String,
-    pub depth: usize,
-    pub is_dir: bool,
-    pub expanded: bool,
-}
-
-/// Lists a directory: folders first, then files, each alphabetical ignoring case. `.git` and
-/// `.DS_Store` are noise, not something to edit.
-fn read_dir_sorted(dir: &Path) -> Vec<(PathBuf, String, bool)> {
-    let mut entries: Vec<(PathBuf, String, bool)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            (name != ".git" && name != ".DS_Store").then(|| {
-                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                (e.path(), name, is_dir)
-            })
-        })
-        .collect();
-    entries.sort_by_key(|(_, name, is_dir)| (!*is_dir, name.to_lowercase()));
-    entries
-}
-
-/// The visible rows of the tree: a folder's children appear only while it is expanded.
-pub(super) fn build_tree_rows(root: &Path, expanded: &HashSet<PathBuf>) -> Vec<TreeRow> {
-    fn walk(dir: &Path, depth: usize, expanded: &HashSet<PathBuf>, out: &mut Vec<TreeRow>) {
-        for (path, name, is_dir) in read_dir_sorted(dir) {
-            let open = is_dir && expanded.contains(&path);
-            out.push(TreeRow { path: path.clone(), name, depth, is_dir, expanded: open });
-            if open {
-                walk(&path, depth + 1, expanded, out);
-            }
-        }
-    }
-    let mut rows = Vec::new();
-    walk(root, 0, expanded, &mut rows);
-    rows
 }
 
 impl Maditor {

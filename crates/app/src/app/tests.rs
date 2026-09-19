@@ -492,21 +492,6 @@ fn project_with_files(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (root, proj)
 }
 
-#[test]
-fn tree_lists_folders_first_hides_git_and_expands_lazily() {
-    let (_root, proj) = project_with_files("tree");
-    let names = |rows: &[workspace::TreeRow]| rows.iter().map(|r| format!("{}{}", " ".repeat(r.depth), r.name)).collect::<Vec<_>>();
-
-    let mut expanded = HashSet::new();
-    let rows = workspace::build_tree_rows(&proj, &expanded);
-    assert_eq!(names(&rows), ["src", "README.md", "zeta.bin"], ".git is hidden, folders come first");
-
-    expanded.insert(proj.join("src"));
-    expanded.insert(proj.join("src/nested"));
-    let rows = workspace::build_tree_rows(&proj, &expanded);
-    assert_eq!(names(&rows), ["src", " nested", "  deep.txt", " main.rs", "README.md", "zeta.bin"]);
-}
-
 #[gpui::test]
 fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut TestAppContext) {
     cx.update(|cx| crate::editor::view::bind_keys(cx));
@@ -523,7 +508,7 @@ fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut Tes
     view.update(cx, |m, cx| m.open_project(plain_path.clone(), cx));
     cx.run_until_parked();
     view.read_with(cx, |m, _| {
-        assert_eq!(m.issue, Some("Not a git repository"));
+        assert_eq!(m.issue, Some(Issue::NotARepo));
         assert!(m.sidebar_view == SidebarView::Files, "no git means the files view");
         assert_eq!(m.tree_rows.len(), 3);
     });
@@ -638,7 +623,7 @@ fn non_git_folder_reports_why_and_can_be_closed(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     view.read_with(cx, |m, _| {
-        assert_eq!(m.issue, Some("Not a git repository"));
+        assert_eq!(m.issue, Some(Issue::NotARepo));
         assert!(m.worktrees.is_empty());
     });
 

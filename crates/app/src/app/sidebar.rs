@@ -2,6 +2,8 @@
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent};
 
 use super::{file_row, FileItem, Maditor, MenuTarget, PickerTarget, SelectNext, SelectPrev, SidebarView};
+use maditor_project::scan::Issue;
+
 use crate::{scroll::axis_locked, theme::*};
 
 impl Maditor {
@@ -60,7 +62,7 @@ impl Maditor {
         let note = |text: &'static str| {
             div().flex_1().flex().items_center().justify_center().text_xs().text_color(TEXT_DIM()).child(text).into_any_element()
         };
-        if self.issue == Some("Not a git repository") {
+        if self.issue == Some(Issue::NotARepo) {
             return note("Not a git repository");
         }
         if self.worktrees.is_empty() {

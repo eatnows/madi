@@ -20,11 +20,16 @@ use maditor_git::{
     diff_layout::DiffLayout,
     git_log::CommitInfo,
     graph::GraphRow,
-    worktree::{self, RepoStatus, WorktreeInfo},
+    worktree::{self, WorktreeInfo},
+};
+
+use maditor_project::{
+    config::{Appearance, Config},
+    scan::{scan_repo, Issue, ScanOutcome},
+    tree::TreeRow,
 };
 
 use crate::{
-    config::{Appearance, Config},
     scroll::{axis_locked, scroll_to_top},
     text_input::TextInput,
     theme::*,
@@ -122,35 +127,10 @@ enum FileItem {
     File(usize),
 }
 
-enum ScanOutcome {
-    Issue(&'static str),
-    Loaded { worktrees: Vec<WorktreeInfo>, pins: HashMap<String, String>, branches: Vec<String> },
-}
-
-/// Runs off the UI thread: git work on a big repo shouldn't freeze the window.
-fn scan_repo(repo: String, mut pins: HashMap<String, String>) -> Result<ScanOutcome, String> {
-    match worktree::check_repo(repo.clone()) {
-        RepoStatus::Ok => {}
-        RepoStatus::NotARepo => return Ok(ScanOutcome::Issue("Not a git repository")),
-        RepoStatus::Missing => return Ok(ScanOutcome::Issue("Folder not found")),
-    }
-    let branches = worktree::list_branches(repo.clone())?;
-    let default = if branches.iter().any(|b| b == "main") {
-        "main".to_string()
-    } else {
-        branches.first().cloned().unwrap_or_default()
-    };
-    for wt in worktree::list_worktrees(repo.clone(), HashMap::new())? {
-        pins.entry(wt.path).or_insert_with(|| default.clone());
-    }
-    let worktrees = worktree::list_worktrees(repo, pins.clone())?;
-    Ok(ScanOutcome::Loaded { worktrees, pins, branches })
-}
-
 pub struct Maditor {
     config: Config,
     repo: String,
-    issue: Option<&'static str>,
+    issue: Option<Issue>,
     error: Option<String>,
     worktrees: Vec<WorktreeInfo>,
     branches: Vec<String>,
@@ -168,7 +148,7 @@ pub struct Maditor {
     confirm: Option<Confirm>,
     sidebar_view: SidebarView,
     workspaces: HashMap<String, workspace::Workspace>,
-    tree_rows: Vec<workspace::TreeRow>,
+    tree_rows: Vec<TreeRow>,
     tree_focus: FocusHandle,
     tree_scroll: ScrollHandle,
     modal_focus: FocusHandle,
@@ -331,11 +311,11 @@ impl Maditor {
                         // Without git there are no worktrees to show, but the files can still be edited.
                         this.sidebar_view = SidebarView::Files;
                     }
-                    Ok(ScanOutcome::Loaded { worktrees, pins, branches }) => {
-                        this.worktrees = worktrees;
-                        this.branches = branches;
-                        this.pins = pins.clone();
-                        this.config.pins.insert(path, pins);
+                    Ok(ScanOutcome::Loaded(scan)) => {
+                        this.worktrees = scan.worktrees;
+                        this.branches = scan.branches;
+                        this.pins = scan.pins.clone();
+                        this.config.pins.insert(path, scan.pins);
                         this.config.save();
                         this.sync_graph_branch(cx);
                     }
@@ -908,7 +888,7 @@ impl Maditor {
         if self.repo.is_empty() {
             return row().child(empty("No project")).into_any_element();
         }
-        if self.issue == Some("Folder not found") {
+        if self.issue == Some(Issue::Missing) {
             let repo = self.repo.clone();
             return row()
                 .flex_col()

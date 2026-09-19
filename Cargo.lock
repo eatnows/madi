@@ -3183,9 +3183,8 @@ dependencies = [
  "chrono",
  "gpui",
  "maditor-git",
+ "maditor-project",
  "maditor-text",
- "serde",
- "serde_json",
  "unicode-segmentation",
 ]
 
@@ -3196,6 +3195,15 @@ dependencies = [
  "git2 0.21.0",
  "serde",
  "similar",
+]
+
+[[package]]
+name = "maditor-project"
+version = "0.1.0"
+dependencies = [
+ "maditor-git",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
