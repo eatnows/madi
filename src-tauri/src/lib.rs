@@ -1,6 +1,4 @@
-mod diff;
-mod git_log;
-mod worktree;
+mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -8,13 +6,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            worktree::list_worktrees,
-            worktree::list_branches,
-            worktree::check_repo,
-            worktree::remove_worktree,
-            diff::diff_against_base,
-            diff::diff_commit,
-            git_log::git_log
+            commands::list_worktrees,
+            commands::list_branches,
+            commands::check_repo,
+            commands::remove_worktree,
+            commands::diff_against_base,
+            commands::diff_commit,
+            commands::git_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

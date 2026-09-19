@@ -35,7 +35,6 @@ fn describe(repo: &Repository, name: String, path: String, is_main: bool) -> (Wo
 /// `base_branches` maps a worktree's path to the base branch it's pinned to (the caller owns
 /// that pinning; git itself has no notion of "which branch this was forked from"). Entries
 /// missing from the map get `ahead`/`behind` of `None`.
-#[tauri::command]
 pub fn list_worktrees(
     repo_path: String,
     base_branches: HashMap<String, String>,
@@ -84,7 +83,6 @@ pub enum RepoStatus {
 /// Tells the UI *why* a registered folder can't be used as a git project, so it can explain
 /// instead of surfacing libgit2's raw error. Other open failures (permissions, corruption) report
 /// `Ok` on purpose: the real command that runs next surfaces its own, more specific error.
-#[tauri::command]
 pub fn check_repo(repo_path: String) -> RepoStatus {
     if !std::path::Path::new(&repo_path).is_dir() {
         return RepoStatus::Missing;
@@ -96,7 +94,6 @@ pub fn check_repo(repo_path: String) -> RepoStatus {
 }
 
 /// Lists local branch names, for populating a base-branch picker.
-#[tauri::command]
 pub fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
     let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
     let branches = repo
@@ -116,7 +113,6 @@ pub fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
 /// Removes a linked worktree (its admin metadata and, since a mismatched checkout state
 /// shouldn't block deletion, its working directory as well) by path. Refuses to touch the
 /// main working directory, which isn't a "worktree" you can remove this way.
-#[tauri::command]
 pub fn remove_worktree(repo_path: String, worktree_path: String) -> Result<(), String> {
     let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
     let target = std::fs::canonicalize(&worktree_path).unwrap_or_else(|_| worktree_path.clone().into());

@@ -1,0 +1,9 @@
+[package]
+name = "maditor-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+git2 = { version = "0.21.0", features = ["vendored-libgit2"] }
+similar = { version = "3.2.0", features = ["inline"] }

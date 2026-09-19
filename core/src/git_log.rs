@@ -19,7 +19,6 @@ pub struct CommitInfo {
 /// at its tip, for rendering a commit graph. `skip`/`limit` page through it — the lane algorithm
 /// needs every commit from the start to stay consistent, so the frontend re-derives lanes over
 /// the full accumulated list on each page rather than this endpoint tracking lane state itself.
-#[tauri::command]
 pub fn git_log(repo_path: String, branch: String, skip: usize, limit: usize) -> Result<Vec<CommitInfo>, String> {
     let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
     let target = repo

@@ -196,7 +196,6 @@ fn collect_uncommitted(
 /// (uncommitted changes, staged and unstaged combined). Each file's content is diffed
 /// line-by-line with word-level emphasis inside changed lines, so the UI can render a
 /// side-by-side view.
-#[tauri::command]
 pub fn diff_against_base(
     worktree_path: String,
     base_branch: String,
@@ -243,7 +242,6 @@ pub fn diff_against_base(
 
 /// Diffs a single commit against its first parent (or an empty tree, for a root commit), for
 /// showing "what changed in this commit" in the git log/graph view.
-#[tauri::command]
 pub fn diff_commit(repo_path: String, oid: String) -> Result<Vec<FileDiff>, String> {
     let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
     let commit_oid = git2::Oid::from_str(&oid).map_err(|e| e.to_string())?;
