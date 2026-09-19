@@ -7,7 +7,7 @@ use gpui::{
     CursorStyle, Corners, Hsla, IntoElement, MouseButton, MouseMoveEvent, PathBuilder, Pixels,
     Point, ScrollStrategy, Window,
 };
-use maditor_core::{diff, git_log};
+use maditor_git::{diff, git_log};
 
 use super::{Maditor, PickerTarget, Resize, SelectNext, SelectPrev, GRAPH_PAGE};
 use crate::scroll::{axis_locked, list_scroll_to_top, scroll_to_top};

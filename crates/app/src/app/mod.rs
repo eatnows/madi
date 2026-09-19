@@ -15,7 +15,7 @@ use gpui::{
     PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Subscription,
     UniformListScrollHandle, Window,
 };
-use maditor_core::{
+use maditor_git::{
     diff::{self, FileDiff},
     git_log::CommitInfo,
     worktree::{self, RepoStatus, WorktreeInfo},

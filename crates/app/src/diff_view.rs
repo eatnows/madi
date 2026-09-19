@@ -6,7 +6,7 @@ use gpui::{
     div, prelude::*, px, uniform_list, AnyElement, ElementId, HighlightStyle, IntoElement, Rgba,
     ScrollHandle, SharedString, StyledText, UniformListScrollHandle,
 };
-use maditor_core::diff::DiffLine;
+use maditor_git::diff::DiffLine;
 
 use crate::{scroll::axis_locked, theme::*};
 
@@ -295,7 +295,7 @@ fn render_unified_row(row: &UnifiedRow) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maditor_core::diff::Segment;
+    use maditor_git::diff::Segment;
 
     fn line(tag: &'static str, old: Option<usize>, new: Option<usize>, text: &str) -> DiffLine {
         DiffLine {

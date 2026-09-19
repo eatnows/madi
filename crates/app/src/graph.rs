@@ -1,6 +1,6 @@
 //! Commit graph shaping: which "lane" each commit sits in and how lines connect between rows, as
 //! `git log --graph` draws it. Pure so it's unit-tested without any UI.
-use maditor_core::git_log::CommitInfo;
+use maditor_git::git_log::CommitInfo;
 
 pub struct GraphRow {
     pub lane: usize,
