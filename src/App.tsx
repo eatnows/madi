@@ -1408,6 +1408,9 @@ function GitPanel({
   const [error, setError] = useState<string | null>(null);
   const [hoveredLane, setHoveredLane] = useState<number | null>(null);
   const [selectedOid, setSelectedOid] = useState<string | null>(null);
+  // Hides just the message box (for more graph height) without deselecting the commit — the file
+  // list/diff on the right stays as-is either way.
+  const [detailMessageCollapsed, setDetailMessageCollapsed] = useState(false);
   const [commitFiles, setCommitFiles] = useState<FileDiff[] | null>(null);
   const [commitFilesError, setCommitFilesError] = useState<string | null>(null);
   const [selectedCommitFile, setSelectedCommitFile] = useState<FileDiff | null>(null);
@@ -1471,6 +1474,7 @@ function GitPanel({
       return;
     }
     setSelectedOid(oid);
+    setDetailMessageCollapsed(false);
     setCommitFiles(null);
     setCommitFilesError(null);
     setSelectedCommitFile(null);
@@ -1525,12 +1529,12 @@ function GitPanel({
             ))}
             {loadingMore && <p className="diff-note graph-loading-more">Loading more…</p>}
           </div>
-          {selectedCommit && (
+          {selectedCommit && !detailMessageCollapsed && (
             <div className="commit-message-detail">
               <button
                 type="button"
                 className="icon-btn commit-message-close"
-                onClick={closeCommitDetail}
+                onClick={() => setDetailMessageCollapsed(true)}
                 aria-label="Close commit detail"
               >
                 <CloseIcon />
