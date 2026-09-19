@@ -83,8 +83,7 @@ impl Maditor {
                         .border_color(BORDER)
                         .child(div().border_b_1().border_color(BORDER_SOFT).text_color(TEXT_STRONG).child(p.input.clone()))
                         .child(
-                            div()
-                                .id("picker-list")
+                            super::axis_locked(div().id("picker-list"))
                                 .max_h(px(LIST_MAX_H))
                                 .overflow_y_scroll()
                                 .p_1()

@@ -10,10 +10,11 @@ use gpui::{
 use maditor_core::{diff, git_log};
 
 use super::{
-    Maditor, PickerTarget, Resize, SelectNext, SelectPrev, GRAPH_PAGE,
+    axis_locked, list_scroll_to_top, scroll_to_top, Maditor, PickerTarget, Resize, SelectNext,
+    SelectPrev, GRAPH_PAGE,
 };
 use crate::{
-    diff_view::{build_rows, render_row},
+    diff_view::{build_rows, content_width, render_row},
     graph::{self, GraphRow},
     theme::*,
 };
@@ -36,6 +37,8 @@ impl Maditor {
         self.graph_rows.clear();
         self.has_more = true;
         self.fetching = false;
+        list_scroll_to_top(&self.graph_scroll);
+        scroll_to_top(&self.graph_hscroll);
         self.close_commit();
     }
 
@@ -135,6 +138,13 @@ impl Maditor {
         self.commit_files.clear();
         self.commit_rows.clear();
         self.selected_cfile = None;
+        scroll_to_top(&self.cfile_scroll);
+        self.reset_cdiff_scroll();
+    }
+
+    fn reset_cdiff_scroll(&self) {
+        list_scroll_to_top(&self.cdiff_scroll);
+        scroll_to_top(&self.cdiff_hscroll);
     }
 
     /// `toggle`: clicking the already-selected commit deselects it (arrow keys never do).
@@ -176,6 +186,8 @@ impl Maditor {
     fn select_cfile(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_cfile = Some(ix);
         self.commit_rows = build_rows(&self.commit_files[ix].lines);
+        self.cdiff_min_w = content_width(&self.commit_rows);
+        self.reset_cdiff_scroll();
         cx.notify();
     }
 
@@ -483,8 +495,7 @@ impl Maditor {
                 .child(div().pr_6().text_size(px(12.5)).text_color(TEXT_STRONG).child(commit.summary.clone()))
                 .when(!commit.body.trim().is_empty(), |d| {
                     d.child(
-                        div()
-                            .id("commit-body")
+                        axis_locked(div().id("commit-body"))
                             .mt_1()
                             .max_h(px(64.))
                             .overflow_y_scroll()
@@ -557,30 +568,23 @@ impl Maditor {
                     .child("×"),
             );
 
-        // gpui turns vertical wheel input into horizontal scroll on a container that only scrolls
-        // horizontally; restricting it to its axis leaves vertical scrolling to the list inside.
-        let mut graph_list = div()
-            .id("graph-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_x_scroll()
-            .track_scroll(&self.graph_hscroll);
-        graph_list.style().restrict_scroll_to_axis = Some(true);
-        let graph_list = graph_list.child(
-                uniform_list(
-                    "graph",
-                    self.commits.len(),
-                    cx.processor(|this, range: Range<usize>, _w, cx| {
-                        if range.end + 30 >= this.commits.len() {
-                            this.load_more(cx);
-                        }
-                        range.map(|ix| this.graph_row(ix, cx)).collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(self.graph_scroll.clone())
-                .min_w(px(GRAPH_MIN_W))
-                .h_full(),
-            );
+        let graph_list = axis_locked(div().id("graph-scroll").flex_1().min_h_0().overflow_x_scroll())
+            .track_scroll(&self.graph_hscroll)
+            .child(
+            axis_locked(uniform_list(
+                "graph",
+                self.commits.len(),
+                cx.processor(|this, range: Range<usize>, _w, cx| {
+                    if range.end + 30 >= this.commits.len() {
+                        this.load_more(cx);
+                    }
+                    range.map(|ix| this.graph_row(ix, cx)).collect::<Vec<_>>()
+                }),
+            ))
+            .track_scroll(self.graph_scroll.clone())
+            .min_w(px(GRAPH_MIN_W))
+            .h_full(),
+        );
 
         let graph_pane = div()
             .id("graph-pane")
@@ -621,8 +625,7 @@ impl Maditor {
                 .min_w_0()
                 .flex()
                 .child(
-                    div()
-                        .id("cfile-list")
+                    axis_locked(div().id("cfile-list"))
                         .key_context("NavList")
                         .track_focus(&self.cfile_focus)
                         .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_cfile(-1, cx)))
@@ -638,18 +641,22 @@ impl Maditor {
                 )
                 .child(self.resize_handle(Resize::CommitFiles, cx))
                 .child(
-                    div().flex_1().min_w_0().bg(BG).child(
-                        uniform_list(
-                            "commit-diff",
-                            self.commit_rows.len(),
-                            cx.processor(|this, range: Range<usize>, _w, _cx| {
-                                range.map(|ix| render_row(&this.commit_rows[ix])).collect::<Vec<_>>()
-                            }),
-                        )
-                        .size_full()
-                        .font_family(MONO)
-                        .text_size(px(12.)),
-                    ),
+                    axis_locked(div().id("cdiff-hscroll").flex_1().min_w_0().bg(BG).overflow_x_scroll())
+                        .track_scroll(&self.cdiff_hscroll)
+                        .child(
+                            axis_locked(uniform_list(
+                                "commit-diff",
+                                self.commit_rows.len(),
+                                cx.processor(|this, range: Range<usize>, _w, _cx| {
+                                    range.map(|ix| render_row(&this.commit_rows[ix])).collect::<Vec<_>>()
+                                }),
+                            ))
+                            .track_scroll(self.cdiff_scroll.clone())
+                            .min_w(px(self.cdiff_min_w))
+                            .h_full()
+                            .font_family(MONO)
+                            .text_size(px(12.)),
+                        ),
                 )
                 .into_any_element()
         };

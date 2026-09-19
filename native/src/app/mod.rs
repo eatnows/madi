@@ -20,7 +20,7 @@ use maditor_core::{
 
 use crate::{
     config::Config,
-    diff_view::{build_rows, render_row, Row},
+    diff_view::{build_rows, content_width, render_row, Row},
     graph::GraphRow,
     picker,
     text_input::TextInput,
@@ -141,6 +141,9 @@ pub struct Maditor {
     file_items: Vec<FileItem>,
     selected_file: Option<usize>,
     rows: Vec<Row>,
+    diff_min_w: f32,
+    diff_scroll: UniformListScrollHandle,
+    diff_hscroll: ScrollHandle,
     loading_diff: bool,
     /// Bumped per request so a slow, superseded scan/diff can't overwrite a newer one.
     scan_gen: u64,
@@ -167,6 +170,9 @@ pub struct Maditor {
     detail_collapsed: bool,
     commit_files: Vec<FileDiff>,
     commit_rows: Vec<Row>,
+    cdiff_min_w: f32,
+    cdiff_scroll: UniformListScrollHandle,
+    cdiff_hscroll: ScrollHandle,
     selected_cfile: Option<usize>,
     commit_gen: u64,
     hovered_lane: Option<usize>,
@@ -193,6 +199,9 @@ impl Maditor {
             file_items: Vec::new(),
             selected_file: None,
             rows: Vec::new(),
+            diff_min_w: 0.,
+            diff_scroll: UniformListScrollHandle::new(),
+            diff_hscroll: ScrollHandle::new(),
             loading_diff: false,
             scan_gen: 0,
             diff_gen: 0,
@@ -217,6 +226,9 @@ impl Maditor {
             detail_collapsed: false,
             commit_files: Vec::new(),
             commit_rows: Vec::new(),
+            cdiff_min_w: 0.,
+            cdiff_scroll: UniformListScrollHandle::new(),
+            cdiff_hscroll: ScrollHandle::new(),
             selected_cfile: None,
             commit_gen: 0,
             hovered_lane: None,
@@ -344,6 +356,8 @@ impl Maditor {
         self.file_items.clear();
         self.selected_file = None;
         self.rows.clear();
+        self.reset_diff_scroll();
+        scroll_to_top(&self.file_scroll);
         self.error = None;
         self.loading_diff = true;
         self.diff_gen += 1;
@@ -390,7 +404,14 @@ impl Maditor {
     fn select_file(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_file = Some(ix);
         self.rows = build_rows(&self.files[ix].lines);
+        self.diff_min_w = content_width(&self.rows);
+        self.reset_diff_scroll();
         cx.notify();
+    }
+
+    fn reset_diff_scroll(&self) {
+        list_scroll_to_top(&self.diff_scroll);
+        scroll_to_top(&self.diff_hscroll);
     }
 
     fn open_picker(&mut self, target: PickerTarget, anchor: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -706,8 +727,7 @@ impl Maditor {
                     .child(div().text_xs().text_color(TEXT_DIM).child("Worktrees")),
             )
             .child(
-                div()
-                    .id("wt-list")
+                axis_locked(div().id("wt-list"))
                     .key_context("NavList")
                     .track_focus(&self.wt_focus)
                     .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_worktree(-1, cx)))
@@ -760,8 +780,7 @@ impl Maditor {
                     .child(div().text_xs().text_color(TEXT_DIM).child(subtitle)),
             )
             .child(
-                div()
-                    .id("file-list")
+                axis_locked(div().id("file-list"))
                     .key_context("NavList")
                     .track_focus(&self.file_focus)
                     .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_file(-1, cx)))
@@ -818,20 +837,27 @@ impl Maditor {
         if self.files.is_empty() && self.error.is_none() {
             return body.child(empty("No changes")).into_any_element();
         }
-        body = body.child(self.file_panel(cx)).child(self.resize_handle(Resize::FilePanel, cx)).child(
-            div().flex_1().min_w_0().bg(BG).child(
-                uniform_list(
-                    "diff",
-                    self.rows.len(),
-                    cx.processor(|this, range: Range<usize>, _w, _cx| {
-                        range.map(|ix| render_row(&this.rows[ix])).collect::<Vec<_>>()
-                    }),
-                )
-                .size_full()
-                .font_family(MONO)
-                .text_size(px(12.)),
-            ),
-        );
+        body = body
+            .child(self.file_panel(cx))
+            .child(self.resize_handle(Resize::FilePanel, cx))
+            .child(
+                axis_locked(div().id("diff-hscroll").flex_1().min_w_0().bg(BG).overflow_x_scroll())
+                    .track_scroll(&self.diff_hscroll)
+                    .child(
+                        axis_locked(uniform_list(
+                            "diff",
+                            self.rows.len(),
+                            cx.processor(|this, range: Range<usize>, _w, _cx| {
+                                range.map(|ix| render_row(&this.rows[ix])).collect::<Vec<_>>()
+                            }),
+                        ))
+                        .track_scroll(self.diff_scroll.clone())
+                        .min_w(px(self.diff_min_w))
+                        .h_full()
+                        .font_family(MONO)
+                        .text_size(px(12.)),
+                    ),
+            );
         body.into_any_element()
     }
 
@@ -1019,6 +1045,23 @@ fn file_row(id: impl Into<gpui::ElementId>, f: &FileDiff, selected: bool) -> gpu
         .child(div().text_xs().text_color(DEL_FG).child(format!("-{}", f.deletions)))
 }
 
+/// gpui reinterprets a wheel's *other* axis as movement along an element's own axis (vertical
+/// input scrolls a horizontal-only container, horizontal input a vertical-only one), and nested
+/// scrollers all receive every event. Left alone, a horizontal swipe over a list also drifted it
+/// vertically. Locking each scroller to its axis keeps the two directions independent.
+fn axis_locked<T: Styled>(mut el: T) -> T {
+    el.style().restrict_scroll_to_axis = Some(true);
+    el
+}
+
+fn scroll_to_top(handle: &ScrollHandle) {
+    handle.set_offset(Point::default());
+}
+
+fn list_scroll_to_top(handle: &UniformListScrollHandle) {
+    handle.0.borrow().base_handle.set_offset(Point::default());
+}
+
 fn selected_path_matches(selected: &Option<usize>, worktrees: &[WorktreeInfo], path: Option<&str>) -> bool {
     match (selected, path) {
         (Some(i), Some(path)) => worktrees[*i].path == path,
@@ -1082,6 +1125,9 @@ impl Render for Maditor {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+
+    /// The graph list is at most this much wider than its pane (820 min width vs the 460 pane).
+    const GRAPH_MIN_WIDTH_FOR_TEST: f32 = 820.0 - 400.0;
     use std::{path::Path, process::Command};
 
     fn git(dir: &Path, args: &[&str]) {
@@ -1374,6 +1420,114 @@ mod tests {
             assert!(list.y < gpui::px(0.), "the list scrolled down: {list:?}");
             assert_eq!(sideways.x, gpui::px(0.), "and did not move sideways: {sideways:?}");
         });
+    }
+
+    /// Opens a repo with enough history to overflow the graph, git panel open, mouse over the list.
+    fn graph_with_overflow<'a>(
+        name: &str,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Maditor>, &'a mut gpui::VisualTestContext, gpui::Point<Pixels>) {
+        let (root, repo) = fixture(name);
+        for i in 0..40 {
+            std::fs::write(repo.join("a.txt"), format!("rev {i}\n")).unwrap();
+            git(&repo, &["commit", "-qam", &format!("commit {i}")]);
+        }
+        let path = repo.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
+        cx.run_until_parked();
+        view.update(cx, |m, cx| {
+            m.git_open = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let over_graph = gpui::point(px(300.), viewport.height - px(150.));
+        cx.simulate_mouse_move(over_graph, None, gpui::Modifiers::default());
+        (view, cx, over_graph)
+    }
+
+    fn wheel(cx: &mut gpui::VisualTestContext, at: gpui::Point<Pixels>, dx: f32, dy: f32) {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(dx), px(dy))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn horizontal_wheel_over_the_graph_scrolls_sideways_only(cx: &mut TestAppContext) {
+        let (view, cx, at) = graph_with_overflow("hwheel", cx);
+
+        wheel(cx, at, -80., 0.);
+        view.read_with(cx, |m, _| {
+            let list = m.graph_scroll.0.borrow().base_handle.offset();
+            let side = m.graph_hscroll.offset();
+            assert!(side.x < px(0.), "scrolled sideways: {side:?}");
+            assert_eq!(list.y, px(0.), "the list must not drift vertically: {list:?}");
+        });
+
+        // Far past the end: clamped to the content, never into blank space.
+        wheel(cx, at, -5000., 0.);
+        let max = view.read_with(cx, |m, _| m.graph_hscroll.offset().x);
+        assert!(max >= px(-(GRAPH_MIN_WIDTH_FOR_TEST)), "clamped at the right edge: {max:?}");
+        // ...and back to exactly the left edge, not past it.
+        wheel(cx, at, 5000., 0.);
+        view.read_with(cx, |m, _| assert_eq!(m.graph_hscroll.offset().x, px(0.)));
+    }
+
+    #[gpui::test]
+    fn diff_scrolls_both_ways_independently_and_resets_on_a_new_file(cx: &mut TestAppContext) {
+        let (root, repo) = fixture("diff-scroll");
+        let wt = root.join("wt");
+        // 120 lines, one very long: overflows the diff pane both vertically and horizontally.
+        let big: String = (0..120)
+            .map(|i| if i == 60 { format!("{}\n", "x".repeat(600)) } else { format!("line {i}\n") })
+            .collect();
+        std::fs::write(wt.join("big.txt"), big).unwrap();
+        git(&wt, &["add", "big.txt"]);
+        git(&wt, &["commit", "-qm", "big"]);
+
+        let path = repo.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
+        cx.run_until_parked();
+        let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
+        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
+        cx.run_until_parked();
+        let big_ix = view.read_with(cx, |m, _| m.files.iter().position(|f| f.path == "big.txt").unwrap());
+        view.update(cx, |m, cx| m.select_file(big_ix, cx));
+        cx.run_until_parked();
+
+        let over_diff = gpui::point(px(1200.), px(500.));
+        cx.simulate_mouse_move(over_diff, None, gpui::Modifiers::default());
+        let offsets = |cx: &mut gpui::VisualTestContext| {
+            view.read_with(cx, |m, _| (m.diff_hscroll.offset(), m.diff_scroll.0.borrow().base_handle.offset()))
+        };
+        assert!(view.read_with(cx, |m, _| m.diff_min_w) > 1400., "content is wider than the pane");
+
+        wheel(cx, over_diff, -300., 0.);
+        let (side, list) = offsets(cx);
+        assert!(side.x < px(0.), "horizontal wheel scrolls the diff sideways: {side:?}");
+        assert_eq!(list.y, px(0.), "and does not drift vertically: {list:?}");
+
+        wheel(cx, over_diff, 0., -200.);
+        let (side_after, list) = offsets(cx);
+        assert!(list.y < px(0.), "vertical wheel scrolls the list: {list:?}");
+        assert_eq!(side_after.x, side.x, "and does not move it sideways");
+
+        // Far past either end is clamped to the content.
+        wheel(cx, over_diff, 20000., 0.);
+        assert_eq!(offsets(cx).0.x, px(0.), "clamped at the left edge");
+
+        // A different file starts back at the top-left.
+        wheel(cx, over_diff, -300., -200.);
+        view.update(cx, |m, cx| m.select_file(0, cx));
+        cx.run_until_parked();
+        let (side, list) = offsets(cx);
+        assert_eq!((side.x, list.y), (px(0.), px(0.)), "reset for the new file");
     }
 
     #[gpui::test]

@@ -122,3 +122,26 @@ pub fn render_row(row: &Row) -> impl IntoElement {
         ),
     }
 }
+
+const CHAR_W: f32 = 7.3;
+const GUTTER_W: f32 = 44.0;
+
+fn columns(cell: &Option<Cell>) -> usize {
+    cell.as_ref()
+        .map(|c| c.text.chars().map(|ch| if ch.is_ascii() { 1 } else { 2 }).sum())
+        .unwrap_or(0)
+}
+
+/// Width the side-by-side view needs so its longest line isn't clipped: both halves are as wide
+/// as the widest line (monospace, wide/CJK glyphs counted as two columns). Estimated once per file.
+pub fn content_width(rows: &[Row]) -> f32 {
+    let widest = rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Pair(l, r) => Some(columns(l).max(columns(r))),
+            Row::Gap => None,
+        })
+        .max()
+        .unwrap_or(0);
+    2.0 * (GUTTER_W + widest as f32 * CHAR_W + 24.0)
+}
