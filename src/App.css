@@ -325,10 +325,26 @@ select {
 .empty-area {
   flex: 1 1 auto;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
+  padding: 0 32px;
+  text-align: center;
   color: var(--text-dim);
   font-size: 14px;
+}
+
+.empty-area-detail {
+  max-width: 460px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.empty-area-action {
+  margin-top: 6px;
 }
 
 /* ---- git panel (full-width, sibling of main-row) ---- */

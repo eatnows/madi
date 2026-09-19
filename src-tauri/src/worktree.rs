@@ -73,6 +73,28 @@ pub fn list_worktrees(
         .collect())
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoStatus {
+    Ok,
+    Missing,
+    NotARepo,
+}
+
+/// Tells the UI *why* a registered folder can't be used as a git project, so it can explain
+/// instead of surfacing libgit2's raw error. Other open failures (permissions, corruption) report
+/// `Ok` on purpose: the real command that runs next surfaces its own, more specific error.
+#[tauri::command]
+pub fn check_repo(repo_path: String) -> RepoStatus {
+    if !std::path::Path::new(&repo_path).is_dir() {
+        return RepoStatus::Missing;
+    }
+    match Repository::open(&repo_path) {
+        Err(e) if e.code() == git2::ErrorCode::NotFound => RepoStatus::NotARepo,
+        _ => RepoStatus::Ok,
+    }
+}
+
 /// Lists local branch names, for populating a base-branch picker.
 #[tauri::command]
 pub fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
@@ -122,6 +144,19 @@ pub fn remove_worktree(repo_path: String, worktree_path: String) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_repo_distinguishes_missing_plain_dir_and_repo() {
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        assert_eq!(check_repo(repo_root), RepoStatus::Ok);
+
+        let plain = std::env::temp_dir().join("maditor-check-repo-plain-dir");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(check_repo(plain.to_string_lossy().into_owned()), RepoStatus::NotARepo);
+        std::fs::remove_dir(&plain).unwrap();
+
+        assert_eq!(check_repo(plain.to_string_lossy().into_owned()), RepoStatus::Missing);
+    }
 
     #[test]
     fn lists_main_worktree_of_this_repo() {

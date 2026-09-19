@@ -894,7 +894,13 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("sidebar");
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; worktree: WorktreeInfo } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    worktree?: WorktreeInfo;
+    project?: string;
+  } | null>(null);
+  const [repoIssue, setRepoIssue] = useState<"missing" | "not_a_repo" | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<WorktreeInfo | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projects, setProjects] = useState<string[]>(() => loadProjects());
@@ -957,7 +963,15 @@ function App() {
     setSelectedFile(null);
     setFollowWorktree(true);
     setGraphBranch("");
+    setRepoIssue(null);
     try {
+      const status = await invoke<"ok" | "missing" | "not_a_repo">("check_repo", { repoPath: path });
+      if (status !== "ok") {
+        setRepoIssue(status);
+        setWorktrees([]);
+        setBranches([]);
+        return;
+      }
       const brs = await invoke<string[]>("list_branches", { repoPath: path });
       setBranches(brs);
 
@@ -1002,6 +1016,32 @@ function App() {
 
   function rescan() {
     if (repoPath) scan(repoPath);
+  }
+
+  function closeProject(path: string) {
+    const idx = projects.indexOf(path);
+    const next = projects.filter((p) => p !== path);
+    setProjects(next);
+    saveProjects(next);
+    try {
+      if (localStorage.getItem(LAST_PROJECT_STORAGE_KEY) === path) localStorage.removeItem(LAST_PROJECT_STORAGE_KEY);
+    } catch {
+      // best-effort
+    }
+    if (path !== repoPath) return;
+    if (next.length > 0) {
+      scan(next[Math.min(idx, next.length - 1)]);
+      return;
+    }
+    setRepoPath("");
+    setRepoIssue(null);
+    setError(null);
+    setWorktrees([]);
+    setBranches([]);
+    setSelectedWorktree(null);
+    setDiff(null);
+    setSelectedFile(null);
+    setGraphBranch("");
   }
 
   async function loadDiff(wt: WorktreeInfo, branch: string) {
@@ -1072,7 +1112,23 @@ function App() {
   const noWorktrees = repoPath !== "" && worktrees.length === 0;
   const noSelection = !noProject && !noWorktrees && !selectedWorktree;
   const noChanges = !!selectedWorktree && !!diff && diff.files.length === 0;
-  const wholeAreaEmptyMessage = noProject ? "No project" : noWorktrees ? "No data" : null;
+  const wholeAreaEmptyMessage = noProject
+    ? "No project"
+    : repoIssue === "not_a_repo"
+      ? "Not a git repository"
+      : repoIssue === "missing"
+        ? "Folder not found"
+        : noWorktrees
+          ? "No data"
+          : null;
+  const wholeAreaEmptyDetail =
+    repoIssue === "not_a_repo"
+      ? `${repoPath} has no .git folder, so git features (worktrees, diffs, graph) are unavailable for it.`
+      : repoIssue === "missing"
+        ? `${repoPath} no longer exists. Restore the folder and rescan, or close this project.`
+        : undefined;
+  const repoOk = repoPath !== "" && !repoIssue;
+  const emptyAreaAction = repoIssue ? { label: "Close project", onClick: () => closeProject(repoPath) } : undefined;
   const detailAreaEmptyMessage = noSelection ? "No data" : noChanges ? "No changes" : null;
 
   return (
@@ -1136,6 +1192,10 @@ function App() {
                   type="button"
                   className={"rail-tile" + (path === repoPath ? " rail-tile--active" : "")}
                   onClick={() => scan(path)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({ x: e.clientX, y: e.clientY, project: path });
+                  }}
                   title={path}
                 >
                   {name[0]?.toUpperCase()}
@@ -1153,7 +1213,7 @@ function App() {
           </div>
 
           {wholeAreaEmptyMessage ? (
-            <EmptyArea message={wholeAreaEmptyMessage} />
+            <EmptyArea message={wholeAreaEmptyMessage} detail={wholeAreaEmptyDetail} action={emptyAreaAction} />
           ) : (
             <>
               <div className="panel worktree-panel" style={{ width: worktreePanelWidth }}>
@@ -1234,7 +1294,7 @@ function App() {
       ) : (
         <div className="focused-layout">
           {wholeAreaEmptyMessage ? (
-            <EmptyArea message={wholeAreaEmptyMessage} />
+            <EmptyArea message={wholeAreaEmptyMessage} detail={wholeAreaEmptyDetail} action={emptyAreaAction} />
           ) : (
             <>
               <div className="focused-subbar">
@@ -1313,7 +1373,7 @@ function App() {
         </div>
       )}
 
-      {repoPath && gitPanelOpen && (
+      {repoOk && gitPanelOpen && (
         <GitPanel
           repoPath={repoPath}
           branches={branches}
@@ -1328,7 +1388,7 @@ function App() {
           onClose={() => setGitPanelOpen(false)}
         />
       )}
-      {repoPath && (
+      {repoOk && (
         <div className="bottom-bar">
           <button
             type="button"
@@ -1345,16 +1405,30 @@ function App() {
         <>
           <div className="context-menu-overlay" onClick={() => setContextMenu(null)} />
           <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
-            <button
-              type="button"
-              className="context-menu-item context-menu-item--danger"
-              onClick={() => {
-                setConfirmRemove(contextMenu.worktree);
-                setContextMenu(null);
-              }}
-            >
-              Remove worktree…
-            </button>
+            {contextMenu.worktree && (
+              <button
+                type="button"
+                className="context-menu-item context-menu-item--danger"
+                onClick={() => {
+                  setConfirmRemove(contextMenu.worktree!);
+                  setContextMenu(null);
+                }}
+              >
+                Remove worktree…
+              </button>
+            )}
+            {contextMenu.project && (
+              <button
+                type="button"
+                className="context-menu-item"
+                onClick={() => {
+                  closeProject(contextMenu.project!);
+                  setContextMenu(null);
+                }}
+              >
+                Close project
+              </button>
+            )}
           </div>
         </>
       )}
@@ -1376,8 +1450,26 @@ function App() {
   );
 }
 
-function EmptyArea({ message }: { message: string }) {
-  return <div className="empty-area">{message}</div>;
+function EmptyArea({
+  message,
+  detail,
+  action,
+}: {
+  message: string;
+  detail?: string;
+  action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className="empty-area">
+      <div>{message}</div>
+      {detail && <div className="empty-area-detail">{detail}</div>}
+      {action && (
+        <button type="button" className="btn empty-area-action" onClick={action.onClick}>
+          {action.label}
+        </button>
+      )}
+    </div>
+  );
 }
 
 /** Full-width git panel (spans under the sidebar too, like VS Code's bottom panel) — git
