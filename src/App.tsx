@@ -1121,12 +1121,6 @@ function App() {
         : noWorktrees
           ? "No data"
           : null;
-  const wholeAreaEmptyDetail =
-    repoIssue === "not_a_repo"
-      ? `${repoPath} has no .git folder, so git features (worktrees, diffs, graph) are unavailable for it.`
-      : repoIssue === "missing"
-        ? `${repoPath} no longer exists. Restore the folder and rescan, or close this project.`
-        : undefined;
   const repoOk = repoPath !== "" && !repoIssue;
   const emptyAreaAction = repoIssue ? { label: "Close project", onClick: () => closeProject(repoPath) } : undefined;
   const detailAreaEmptyMessage = noSelection ? "No data" : noChanges ? "No changes" : null;
@@ -1213,7 +1207,7 @@ function App() {
           </div>
 
           {wholeAreaEmptyMessage ? (
-            <EmptyArea message={wholeAreaEmptyMessage} detail={wholeAreaEmptyDetail} action={emptyAreaAction} />
+            <EmptyArea message={wholeAreaEmptyMessage} action={emptyAreaAction} />
           ) : (
             <>
               <div className="panel worktree-panel" style={{ width: worktreePanelWidth }}>
@@ -1294,7 +1288,7 @@ function App() {
       ) : (
         <div className="focused-layout">
           {wholeAreaEmptyMessage ? (
-            <EmptyArea message={wholeAreaEmptyMessage} detail={wholeAreaEmptyDetail} action={emptyAreaAction} />
+            <EmptyArea message={wholeAreaEmptyMessage} action={emptyAreaAction} />
           ) : (
             <>
               <div className="focused-subbar">
@@ -1452,17 +1446,14 @@ function App() {
 
 function EmptyArea({
   message,
-  detail,
   action,
 }: {
   message: string;
-  detail?: string;
   action?: { label: string; onClick: () => void };
 }) {
   return (
     <div className="empty-area">
       <div>{message}</div>
-      {detail && <div className="empty-area-detail">{detail}</div>}
       {action && (
         <button type="button" className="btn empty-area-action" onClick={action.onClick}>
           {action.label}

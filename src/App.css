@@ -335,14 +335,6 @@ select {
   font-size: 14px;
 }
 
-.empty-area-detail {
-  max-width: 460px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-dim);
-  overflow-wrap: anywhere;
-}
-
 .empty-area-action {
   margin-top: 6px;
 }
