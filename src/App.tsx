@@ -246,12 +246,6 @@ function VerticalResizer({ onResize }: { onResize: (deltaY: number) => void }) {
 const GRAPH_PAGE_SIZE = 100;
 const LANE_WIDTH = 16;
 const LANE_X0 = 10;
-// ponytail: fixed rather than derived from the loaded commits' real max lane count — sizing the
-// column to the data made the message/author/date columns visibly shift every time pagination
-// loaded a page with more (or fewer) concurrent branches. A rare graph busier than this still
-// draws correctly (SVG isn't clipped), it just extends past its own column into the message text.
-const GRAPH_MAX_LANES = 8;
-const GRAPH_LANE_COLUMN_WIDTH = GRAPH_MAX_LANES * LANE_WIDTH + LANE_X0;
 const LANE_COLORS = ["#a08256", "#7fa87f", "#a87f7f", "#8a8fbf", "#bf8fbf", "#8fb0bf"];
 
 function laneColor(lane: number) {
@@ -276,7 +270,14 @@ function formatRelativeTime(timestampSeconds: number): string {
  * points the old "hover the whole row" approach highlighted the row's own lane no matter which
  * line the cursor was actually over. Each segment now gets its own wide, invisible, transparent
  * twin purely for hit-testing (`pointerEvents="stroke"` so only the drawn path counts, not its
- * bounding box), so hovering highlights exactly the line under the cursor. */
+ * bounding box), so hovering highlights exactly the line under the cursor.
+ *
+ * Width is sized to *this row's own* lane count, not a shared/global value — a commit's own
+ * local complexity never changes once loaded, so unlike a global max recomputed as pagination
+ * loads more history, this can't retroactively shift rows already on screen. The message/author/
+ * date columns are expected to move with it: they widen when many branches are open and slide
+ * back left as the graph converges, tracking the real shape of the history instead of hiding it
+ * behind a fixed or scrollable column. */
 function GraphLane({
   row,
   hoveredLane,
@@ -286,6 +287,7 @@ function GraphLane({
   hoveredLane: number | null;
   onHoverLane: (lane: number | null) => void;
 }) {
+  const width = (row.maxLane + 1) * LANE_WIDTH + LANE_X0;
   const x = (lane: number) => LANE_X0 + lane * LANE_WIDTH;
   const opacity = (...lanes: number[]) => (hoveredLane === null || lanes.includes(hoveredLane) ? 1 : 0.22);
   const hitProps = (lane: number) => ({
@@ -296,7 +298,7 @@ function GraphLane({
     onMouseLeave: () => onHoverLane(null),
   });
   return (
-    <svg width={GRAPH_LANE_COLUMN_WIDTH} height={36} className="graph-lane" style={{ overflow: "visible" }}>
+    <svg width={width} height={36} className="graph-lane">
       {row.passThrough.map((lane) => (
         <g key={`p${lane}`}>
           <line x1={x(lane)} y1={0} x2={x(lane)} y2={36} stroke={laneColor(lane)} strokeWidth={2} opacity={opacity(lane)} pointerEvents="none" />

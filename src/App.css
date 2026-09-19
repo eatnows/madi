@@ -456,9 +456,10 @@ select {
 
 .graph-row {
   display: grid;
-  /* Fixed (not auto) so this column can't grow/shrink as pagination loads pages with a different
-     max concurrent branch count, which used to shift the message/author/date columns around. */
-  grid-template-columns: 138px 1fr 140px 96px 76px;
+  /* auto: this column tracks each row's own lane count, so the message/author/date columns move
+     with the graph's real shape (wider where branches are open, narrower where it's converged)
+     instead of being clipped by, or fighting, a width capped/shared across rows. */
+  grid-template-columns: auto 1fr 140px 96px 76px;
   align-items: center;
   height: 36px;
   padding: 0 16px;
