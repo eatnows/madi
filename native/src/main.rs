@@ -1,6 +1,8 @@
 mod app;
 mod config;
 mod diff_view;
+mod picker;
+mod text_input;
 mod theme;
 
 use gpui::{prelude::*, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
@@ -11,6 +13,7 @@ fn main() {
 
     Application::new().run(move |cx: &mut App| {
         app::bind_keys(cx);
+        text_input::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         cx.open_window(
             WindowOptions {

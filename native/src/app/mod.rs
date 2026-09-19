@@ -1,9 +1,14 @@
-use std::{collections::HashMap, ops::Range};
+mod picker_view;
+
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 use gpui::{
-    actions, div, prelude::*, px, uniform_list, App, Context, FocusHandle, IntoElement, KeyBinding,
-    MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Point, ScrollHandle, SharedString,
-    Window,
+    actions, div, prelude::*, px, uniform_list, App, Context, Entity, FocusHandle, Focusable,
+    ClickEvent, IntoElement, KeyBinding, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Point,
+    ScrollHandle, SharedString, Subscription, Window,
 };
 use maditor_core::{
     diff::{self, FileDiff},
@@ -13,16 +18,39 @@ use maditor_core::{
 use crate::{
     config::Config,
     diff_view::{build_rows, render_row, Row},
+    picker,
+    text_input::TextInput,
     theme::*,
 };
 
-actions!(maditor, [SelectPrev, SelectNext]);
+actions!(maditor, [SelectPrev, SelectNext, PickerConfirm, PickerCancel]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("up", SelectPrev, Some("NavList")),
         KeyBinding::new("down", SelectNext, Some("NavList")),
+        KeyBinding::new("up", SelectPrev, Some("Picker")),
+        KeyBinding::new("down", SelectNext, Some("Picker")),
+        KeyBinding::new("enter", PickerConfirm, Some("Picker")),
+        KeyBinding::new("escape", PickerCancel, Some("Picker")),
     ]);
+}
+
+/// What a picker selection applies to.
+#[derive(Clone)]
+enum PickerTarget {
+    /// The base branch pinned for the worktree at this path.
+    WorktreeBase(String),
+}
+
+struct BranchPickerState {
+    target: PickerTarget,
+    anchor: Point<Pixels>,
+    input: Entity<TextInput>,
+    collapsed: HashSet<String>,
+    highlighted: usize,
+    last_query: String,
+    _subscription: Subscription,
 }
 
 enum FileItem {
@@ -32,7 +60,7 @@ enum FileItem {
 
 enum ScanOutcome {
     Issue(&'static str),
-    Loaded { worktrees: Vec<WorktreeInfo>, pins: HashMap<String, String> },
+    Loaded { worktrees: Vec<WorktreeInfo>, pins: HashMap<String, String>, branches: Vec<String> },
 }
 
 /// Runs off the UI thread: git work on a big repo shouldn't freeze the window.
@@ -52,7 +80,7 @@ fn scan_repo(repo: String, mut pins: HashMap<String, String>) -> Result<ScanOutc
         pins.entry(wt.path).or_insert_with(|| default.clone());
     }
     let worktrees = worktree::list_worktrees(repo, pins.clone())?;
-    Ok(ScanOutcome::Loaded { worktrees, pins })
+    Ok(ScanOutcome::Loaded { worktrees, pins, branches })
 }
 
 pub struct Maditor {
@@ -61,7 +89,9 @@ pub struct Maditor {
     issue: Option<&'static str>,
     error: Option<String>,
     worktrees: Vec<WorktreeInfo>,
+    branches: Vec<String>,
     pins: HashMap<String, String>,
+    picker: Option<BranchPickerState>,
     selected_wt: Option<usize>,
     files: Vec<FileDiff>,
     file_items: Vec<FileItem>,
@@ -86,7 +116,9 @@ impl Maditor {
             issue: None,
             error: None,
             worktrees: Vec::new(),
+            branches: Vec::new(),
             pins: HashMap::new(),
+            picker: None,
             selected_wt: None,
             files: Vec::new(),
             file_items: Vec::new(),
@@ -124,6 +156,8 @@ impl Maditor {
         self.issue = None;
         self.error = None;
         self.worktrees.clear();
+        self.branches.clear();
+        self.picker = None;
         self.selected_wt = None;
         self.files.clear();
         self.file_items.clear();
@@ -149,8 +183,9 @@ impl Maditor {
                 }
                 match result {
                     Ok(ScanOutcome::Issue(issue)) => this.issue = Some(issue),
-                    Ok(ScanOutcome::Loaded { worktrees, pins }) => {
+                    Ok(ScanOutcome::Loaded { worktrees, pins, branches }) => {
                         this.worktrees = worktrees;
+                        this.branches = branches;
                         this.pins = pins.clone();
                         this.config.pins.insert(path, pins);
                         this.config.save();
@@ -259,6 +294,111 @@ impl Maditor {
         cx.notify();
     }
 
+    fn open_picker(&mut self, target: PickerTarget, anchor: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| TextInput::new("Search branches", cx));
+        window.focus(&input.focus_handle(cx));
+        let subscription = cx.observe(&input, |this, input, cx| {
+            let query = input.read(cx).content().to_string();
+            if let Some(p) = &mut this.picker {
+                if p.last_query != query {
+                    p.last_query = query;
+                    p.highlighted = 0;
+                }
+            }
+            cx.notify();
+        });
+        self.picker = Some(BranchPickerState {
+            target,
+            anchor,
+            input,
+            collapsed: HashSet::new(),
+            highlighted: 0,
+            last_query: String::new(),
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.take().is_some() {
+            window.focus(&self.wt_focus);
+            cx.notify();
+        }
+    }
+
+    fn picker_rows(&self, cx: &App) -> Vec<picker::PickerRow> {
+        match &self.picker {
+            Some(p) => picker::flatten(&self.branches, &p.collapsed, p.input.read(cx).content()),
+            None => Vec::new(),
+        }
+    }
+
+    /// Enter/click on a picker row: a branch applies to the target, a folder toggles open/closed.
+    fn picker_activate(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picked) = self.picker_rows(cx).into_iter().nth(row) else { return };
+        match picked {
+            picker::PickerRow::Folder { full_path, .. } => {
+                if let Some(p) = &mut self.picker {
+                    if !p.collapsed.remove(&full_path) {
+                        p.collapsed.insert(full_path);
+                    }
+                }
+                cx.notify();
+            }
+            picker::PickerRow::Option { full_path, .. } => {
+                let Some(target) = self.picker.as_ref().map(|p| p.target.clone()) else { return };
+                self.close_picker(window, cx);
+                match target {
+                    PickerTarget::WorktreeBase(path) => self.change_base(path, full_path, cx),
+                }
+            }
+        }
+    }
+
+    fn move_picker(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let len = self.picker_rows(cx).len();
+        if let Some(p) = &mut self.picker {
+            if len > 0 {
+                p.highlighted = (p.highlighted as isize + delta).clamp(0, len as isize - 1) as usize;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Pins a new base branch for a worktree, refreshing ahead/behind and (if it's the one on
+    /// screen) its diff.
+    fn change_base(&mut self, worktree_path: String, branch: String, cx: &mut Context<Self>) {
+        self.pins.insert(worktree_path.clone(), branch);
+        self.config.pins.insert(self.repo.clone(), self.pins.clone());
+        self.config.save();
+        let (repo, pins, generation) = (self.repo.clone(), self.pins.clone(), self.scan_gen);
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { worktree::list_worktrees(repo, pins) }).await;
+            this.update(cx, |this, cx| {
+                if this.scan_gen != generation {
+                    return;
+                }
+                match result {
+                    Ok(worktrees) => {
+                        let selected_path = this.selected_wt.map(|i| this.worktrees[i].path.clone());
+                        this.worktrees = worktrees;
+                        this.selected_wt =
+                            selected_path.and_then(|p| this.worktrees.iter().position(|w| w.path == p));
+                        if selected_path_matches(&this.selected_wt, &this.worktrees, &worktree_path) {
+                            if let Some(ix) = this.selected_wt {
+                                this.select_worktree(ix, cx);
+                            }
+                        }
+                    }
+                    Err(e) => this.error = Some(e),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn move_worktree(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.worktrees.is_empty() {
             return;
@@ -350,6 +490,7 @@ impl Maditor {
                 _ => String::new(),
             };
             let base = self.pins.get(&wt.path).cloned().unwrap_or_default();
+            let wt_path = wt.path.clone();
             div()
                 .id(("wt", ix))
                 .px_2()
@@ -368,9 +509,23 @@ impl Maditor {
                     div()
                         .flex()
                         .gap_2()
+                        .items_center()
                         .text_xs()
                         .text_color(TEXT_DIM)
-                        .child(format!("base: {base}"))
+                        .child(
+                            div()
+                                .id(("base", ix))
+                                .px_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .hover(|d| d.bg(BORDER).text_color(TEXT_STRONG))
+                                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    let anchor = ev.position();
+                                    this.open_picker(PickerTarget::WorktreeBase(wt_path.clone()), anchor, window, cx);
+                                }))
+                                .child(format!("base: {base} ⌄")),
+                        )
                         .child(status),
                 )
         });
@@ -597,12 +752,16 @@ impl Maditor {
     }
 }
 
+fn selected_path_matches(selected: &Option<usize>, worktrees: &[WorktreeInfo], path: &str) -> bool {
+    selected.map(|i| worktrees[i].path == path).unwrap_or(false)
+}
+
 fn empty(message: impl Into<SharedString>) -> impl IntoElement {
     div().flex_1().flex().items_center().justify_center().text_color(TEXT_DIM).child(message.into())
 }
 
 impl Render for Maditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut breadcrumb = format!("maditor / {}", Self::project_name(&self.repo));
         if let Some(ix) = self.selected_wt {
             let wt = &self.worktrees[ix];
@@ -638,6 +797,7 @@ impl Render for Maditor {
             )
             .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.body(cx)))
             .children(self.context_menu(cx))
+            .children(self.picker_overlay(window, cx))
     }
 }
 
@@ -730,6 +890,45 @@ mod tests {
         assert_eq!(view.read_with(cx, |m, _| m.selected_file), Some(1), "clamped at the last file");
         view.update(cx, |m, cx| m.move_file(-5, cx));
         assert_eq!(view.read_with(cx, |m, _| m.selected_file), Some(0));
+    }
+
+    #[gpui::test]
+    fn picking_a_base_branch_pins_it_and_refreshes_ahead_behind(cx: &mut TestAppContext) {
+        let (root, repo) = fixture("pick");
+        let path = repo.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
+        cx.run_until_parked();
+
+        let (wt_ix, wt_path) = view.read_with(cx, |m, _| {
+            let ix = m.worktrees.iter().position(|w| !w.is_main).unwrap();
+            (ix, m.worktrees[ix].path.clone())
+        });
+        assert_eq!(view.read_with(cx, |m, _| (m.worktrees[wt_ix].ahead, m.worktrees[wt_ix].behind)), (Some(1), Some(0)));
+
+        view.update_in(cx, |m, window, cx| {
+            m.open_picker(PickerTarget::WorktreeBase(wt_path.clone()), Point::default(), window, cx)
+        });
+        // Rows are alphabetical: feature, main. Activate "feature" (the worktree's own branch).
+        let feature_row = view.read_with(cx, |m, cx| {
+            m.picker_rows(cx)
+                .iter()
+                .position(|r| matches!(r, picker::PickerRow::Option { full_path, .. } if full_path == "feature"))
+                .unwrap()
+        });
+        view.update_in(cx, |m, window, cx| m.picker_activate(feature_row, window, cx));
+        cx.run_until_parked();
+
+        view.read_with(cx, |m, _| {
+            assert!(m.picker.is_none(), "picker closes after a pick");
+            assert_eq!(m.pins.get(&wt_path).map(String::as_str), Some("feature"));
+            let ix = m.worktrees.iter().position(|w| w.path == wt_path).unwrap();
+            assert_eq!((m.worktrees[ix].ahead, m.worktrees[ix].behind), (Some(0), Some(0)));
+        });
+        assert_eq!(
+            config_in(&root).pins[&path][&wt_path], "feature",
+            "the pin was persisted"
+        );
     }
 
     #[gpui::test]
