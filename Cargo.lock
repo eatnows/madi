@@ -3182,11 +3182,19 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "gpui",
+ "maditor-editor",
  "maditor-git",
  "maditor-project",
+ "maditor-ui",
+]
+
+[[package]]
+name = "maditor-editor"
+version = "0.1.0"
+dependencies = [
+ "gpui",
  "maditor-text",
  "maditor-ui",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -3210,6 +3218,9 @@ dependencies = [
 [[package]]
 name = "maditor-text"
 version = "0.1.0"
+dependencies = [
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "maditor-ui"

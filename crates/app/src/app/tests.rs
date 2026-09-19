@@ -494,7 +494,7 @@ fn project_with_files(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
 
 #[gpui::test]
 fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut TestAppContext) {
-    cx.update(|cx| crate::editor::view::bind_keys(cx));
+    cx.update(|cx| maditor_editor::bind_keys(cx));
     let (root, proj) = project_with_files("edit");
     let path = proj.to_string_lossy().into_owned();
     let config = config_in(&root);
@@ -541,7 +541,7 @@ fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut Tes
 
 #[gpui::test]
 fn preview_tabs_are_replaced_until_pinned_by_editing_or_reopening(cx: &mut TestAppContext) {
-    cx.update(|cx| crate::editor::view::bind_keys(cx));
+    cx.update(|cx| maditor_editor::bind_keys(cx));
     let (root, proj) = project_with_files("preview");
     let path = proj.to_string_lossy().into_owned();
     let config = config_in(&root);
@@ -589,7 +589,7 @@ fn opening_a_binary_file_reports_it_instead_of_a_tab(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn closing_a_project_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
-    cx.update(|cx| crate::editor::view::bind_keys(cx));
+    cx.update(|cx| maditor_editor::bind_keys(cx));
     let (root, proj) = project_with_files("close-dirty");
     std::fs::remove_dir_all(proj.join(".git")).unwrap();
     let path = proj.to_string_lossy().into_owned();

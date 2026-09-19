@@ -11,9 +11,8 @@ use gpui::{
     ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle,
     UniformListScrollHandle, Window,
 };
-use unicode_segmentation::UnicodeSegmentation;
 
-use maditor_text::{Buffer, Pos};
+use maditor_text::{Document, Pos};
 use maditor_ui::theme::*;
 
 actions!(
@@ -82,21 +81,12 @@ impl gpui::EventEmitter<EditorEvent> for Editor {}
 pub const ROW_H: f32 = 20.0;
 const GUTTER_W: f32 = 56.0;
 const CHAR_W: f32 = 7.9;
-const TAB: &str = "    ";
+const PAGE_LINES: isize = 30;
 
 pub struct Editor {
     focus_handle: FocusHandle,
-    pub buffer: Buffer,
-    /// The moving end of the selection; `anchor` is the fixed end (equal when nothing is selected).
-    cursor: Pos,
-    anchor: Pos,
-    /// IME composition in progress (underlined until committed).
-    marked: Option<(Pos, Pos)>,
-    /// Column (in characters) vertical movement tries to return to.
-    goal_col: Option<usize>,
+    doc: Document,
     pub path: Option<PathBuf>,
-    saved_revision: u64,
-    crlf: bool,
     pub scroll: UniformListScrollHandle,
     hscroll: ScrollHandle,
     /// Shaped lines and their on-screen bounds from the last paint, for hit-testing and IME.
@@ -109,17 +99,10 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(text: &str, path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
-        let crlf = text.contains("\r\n");
-        let mut editor = Self {
+        Self {
             focus_handle: cx.focus_handle(),
-            buffer: Buffer::from_text(text),
-            cursor: Pos::default(),
-            anchor: Pos::default(),
-            marked: None,
-            goal_col: None,
+            doc: Document::new(text),
             path,
-            saved_revision: 0,
-            crlf,
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             layouts: RefCell::new(HashMap::new()),
@@ -127,306 +110,188 @@ impl Editor {
             reveal_cursor: false,
             content_width: 0.,
             width_revision: u64::MAX,
-        };
-        editor.saved_revision = editor.buffer.revision();
-        editor
+        }
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.doc.is_dirty()
     }
 
     /// 1-based line and column (in characters) of the caret, for the status bar.
     pub fn cursor_display(&self) -> (usize, usize) {
-        let line = self.buffer.line(self.cursor.row);
-        (self.cursor.row + 1, line[..self.cursor.col.min(line.len())].chars().count() + 1)
+        self.doc.cursor_display()
     }
 
     pub fn line_ending(&self) -> &'static str {
-        if self.crlf { "CRLF" } else { "LF" }
-    }
-
-    pub fn is_dirty(&self) -> bool {
-        self.buffer.revision() != self.saved_revision
+        self.doc.line_ending()
     }
 
     #[cfg(test)]
     pub fn text(&self) -> String {
-        self.buffer.text()
+        self.doc.text()
     }
 
     #[cfg(test)]
     pub fn cursor(&self) -> Pos {
-        self.cursor
+        self.doc.cursor()
     }
 
-    pub fn selection(&self) -> (Pos, Pos) {
-        (self.anchor.min(self.cursor), self.anchor.max(self.cursor))
-    }
-
-    fn selected_text(&self) -> String {
-        let (a, b) = self.selection();
-        self.buffer.text_in(a, b)
-    }
-
-    /// Writes the buffer to its path (restoring CRLF line endings if the file had them).
+    /// Writes the document to its path (restoring CRLF line endings if the file had them).
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let Some(path) = self.path.clone() else { return Ok(()) };
-        let mut text = self.buffer.text();
-        if self.crlf {
-            text = text.replace('\n', "\r\n");
-        }
-        std::fs::write(path, text)?;
-        self.saved_revision = self.buffer.revision();
+        std::fs::write(path, self.doc.text_for_save())?;
+        self.doc.mark_saved();
         cx.notify();
         Ok(())
     }
 
-    // ---- cursor & selection ---------------------------------------------------------------
-
-    fn set_cursor(&mut self, pos: Pos, extend: bool, cx: &mut Context<Self>) {
-        self.cursor = self.buffer.clamp(pos);
-        if !extend {
-            self.anchor = self.cursor;
-        }
-        self.goal_col = None;
-        self.marked = None;
-        self.buffer.break_undo_run();
+    /// After the document changed or the caret moved: keep the caret in view and repaint.
+    fn touched(&mut self, cx: &mut Context<Self>) {
         self.reveal_cursor = true;
-        self.scroll_to_cursor();
+        self.scroll.scroll_to_item(self.doc.cursor().row, ScrollStrategy::Center);
         cx.notify();
     }
 
-    fn scroll_to_cursor(&self) {
-        self.scroll.scroll_to_item(self.cursor.row, ScrollStrategy::Center);
+    fn content_width(&mut self) -> f32 {
+        if self.width_revision != self.doc.revision() {
+            let cols = (0..self.doc.line_count())
+                .map(|r| self.doc.line(r).chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum::<usize>())
+                .max()
+                .unwrap_or(0);
+            self.content_width = GUTTER_W + cols as f32 * CHAR_W + 80.0;
+            self.width_revision = self.doc.revision();
+        }
+        self.content_width
     }
 
-    fn prev_boundary(&self, p: Pos) -> Pos {
-        if p.col == 0 {
-            return if p.row == 0 { p } else { Pos::new(p.row - 1, self.buffer.line(p.row - 1).len()) };
-        }
-        let line = self.buffer.line(p.row);
-        let col = line.grapheme_indices(true).rev().find_map(|(i, _)| (i < p.col).then_some(i)).unwrap_or(0);
-        Pos::new(p.row, col)
-    }
-
-    fn next_boundary(&self, p: Pos) -> Pos {
-        let line = self.buffer.line(p.row);
-        if p.col >= line.len() {
-            return if p.row + 1 < self.buffer.line_count() { Pos::new(p.row + 1, 0) } else { p };
-        }
-        let col = line.grapheme_indices(true).find_map(|(i, _)| (i > p.col).then_some(i)).unwrap_or(line.len());
-        Pos::new(p.row, col)
-    }
-
-    fn word_left(&self, mut p: Pos) -> Pos {
-        loop {
-            let before = self.prev_boundary(p);
-            if before == p {
-                return p;
-            }
-            let ch = self.char_at(before);
-            p = before;
-            if ch.map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) {
-                break;
-            }
-        }
-        while p.col > 0 {
-            let before = self.prev_boundary(p);
-            if !self.char_at(before).map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) {
-                break;
-            }
-            p = before;
-        }
-        p
-    }
-
-    fn word_right(&self, mut p: Pos) -> Pos {
-        loop {
-            let after = self.next_boundary(p);
-            if after == p {
-                return p;
-            }
-            let ch = self.char_at(p);
-            p = after;
-            if ch.map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) {
-                break;
-            }
-        }
-        while p.col < self.buffer.line(p.row).len() {
-            if !self.char_at(p).map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) {
-                break;
-            }
-            p = self.next_boundary(p);
-        }
-        p
-    }
-
-    fn char_at(&self, p: Pos) -> Option<char> {
-        self.buffer.line(p.row).get(p.col..).and_then(|s| s.chars().next())
-    }
-
-    /// Moves vertically, keeping the remembered column across short lines.
-    fn move_vertical(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
-        let goal = self.goal_col.unwrap_or_else(|| self.buffer.line(self.cursor.row)[..self.cursor.col].chars().count());
-        let row = (self.cursor.row as isize + delta).clamp(0, self.buffer.line_count() as isize - 1) as usize;
-        let col = if row == self.cursor.row && delta != 0 {
-            if delta < 0 { 0 } else { self.buffer.line(row).len() }
-        } else {
-            let line = self.buffer.line(row);
-            line.char_indices().nth(goal).map(|(i, _)| i).unwrap_or(line.len())
-        };
-        self.set_cursor(Pos::new(row, col), extend, cx);
-        self.goal_col = Some(goal);
-    }
+    // ---- actions: each forwards to the document, then keeps the caret visible ----------------------
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
-        let (a, b) = self.selection();
-        let to = if a != b { a } else { self.prev_boundary(self.cursor) };
-        self.set_cursor(to, false, cx);
+        self.doc.move_left(false);
+        self.touched(cx);
     }
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
-        let (a, b) = self.selection();
-        let to = if a != b { b } else { self.next_boundary(self.cursor) };
-        self.set_cursor(to, false, cx);
+        self.doc.move_right(false);
+        self.touched(cx);
     }
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_vertical(-1, false, cx);
+        self.doc.move_vertical(-1, false);
+        self.touched(cx);
     }
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_vertical(1, false, cx);
+        self.doc.move_vertical(1, false);
+        self.touched(cx);
     }
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.prev_boundary(self.cursor), true, cx);
+        self.doc.move_left(true);
+        self.touched(cx);
     }
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.next_boundary(self.cursor), true, cx);
+        self.doc.move_right(true);
+        self.touched(cx);
     }
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_vertical(-1, true, cx);
+        self.doc.move_vertical(-1, true);
+        self.touched(cx);
     }
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_vertical(1, true, cx);
-    }
-    fn page(&mut self, delta: isize, cx: &mut Context<Self>) {
-        self.move_vertical(delta * 30, false, cx);
+        self.doc.move_vertical(1, true);
+        self.touched(cx);
     }
     fn page_up(&mut self, _: &PageUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.page(-1, cx);
+        self.doc.move_vertical(-PAGE_LINES, false);
+        self.touched(cx);
     }
     fn page_down(&mut self, _: &PageDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.page(1, cx);
-    }
-
-    /// First non-blank column of the line, toggling with column 0 like most editors.
-    fn line_start_pos(&self) -> Pos {
-        let line = self.buffer.line(self.cursor.row);
-        let indent = line.len() - line.trim_start().len();
-        Pos::new(self.cursor.row, if self.cursor.col == indent { 0 } else { indent })
+        self.doc.move_vertical(PAGE_LINES, false);
+        self.touched(cx);
     }
     fn line_start(&mut self, _: &LineStart, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.line_start_pos(), false, cx);
+        self.doc.move_line_start(false);
+        self.touched(cx);
     }
     fn line_end(&mut self, _: &LineEnd, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(Pos::new(self.cursor.row, self.buffer.line(self.cursor.row).len()), false, cx);
+        self.doc.move_line_end(false);
+        self.touched(cx);
     }
     fn select_line_start(&mut self, _: &SelectLineStart, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.line_start_pos(), true, cx);
+        self.doc.move_line_start(true);
+        self.touched(cx);
     }
     fn select_line_end(&mut self, _: &SelectLineEnd, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(Pos::new(self.cursor.row, self.buffer.line(self.cursor.row).len()), true, cx);
+        self.doc.move_line_end(true);
+        self.touched(cx);
     }
     fn doc_start(&mut self, _: &DocStart, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(Pos::default(), false, cx);
+        self.doc.move_doc_start();
+        self.touched(cx);
     }
     fn doc_end(&mut self, _: &DocEnd, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.buffer.end(), false, cx);
+        self.doc.move_doc_end();
+        self.touched(cx);
     }
     fn word_left_action(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.word_left(self.cursor), false, cx);
+        self.doc.move_word_left(false);
+        self.touched(cx);
     }
     fn word_right_action(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.word_right(self.cursor), false, cx);
+        self.doc.move_word_right(false);
+        self.touched(cx);
     }
     fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.word_left(self.cursor), true, cx);
+        self.doc.move_word_left(true);
+        self.touched(cx);
     }
     fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_cursor(self.word_right(self.cursor), true, cx);
+        self.doc.move_word_right(true);
+        self.touched(cx);
     }
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        self.anchor = Pos::default();
-        self.cursor = self.buffer.end();
+        self.doc.select_all();
         cx.notify();
     }
-
-    // ---- editing ---------------------------------------------------------------------------
-
-    fn edit(&mut self, from: Pos, to: Pos, text: &str, typing: bool, cx: &mut Context<Self>) {
-        let end = self.buffer.replace(from, to, text, typing);
-        self.cursor = end;
-        self.anchor = end;
-        self.goal_col = None;
-        self.marked = None;
-        self.reveal_cursor = true;
-        self.scroll_to_cursor();
-        cx.notify();
-    }
-
     fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
-        let (a, b) = self.selection();
-        let from = if a != b { a } else { self.prev_boundary(self.cursor) };
-        self.edit(from, b, "", false, cx);
+        self.doc.backspace();
+        self.touched(cx);
     }
     fn delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
-        let (a, b) = self.selection();
-        let to = if a != b { b } else { self.next_boundary(self.cursor) };
-        self.edit(a, to, "", false, cx);
+        self.doc.delete();
+        self.touched(cx);
     }
-    /// A newline that keeps the current line's indentation.
     fn newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
-        let (a, b) = self.selection();
-        let line = self.buffer.line(a.row);
-        let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect::<String>();
-        let indent = &indent[..indent.len().min(a.col)];
-        self.edit(a, b, &format!("\n{indent}"), true, cx);
+        self.doc.newline();
+        self.touched(cx);
     }
     fn tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
-        let (a, b) = self.selection();
-        self.edit(a, b, TAB, false, cx);
+        self.doc.tab();
+        self.touched(cx);
     }
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        let text = self.selected_text();
+        let text = self.doc.selected_text();
         if !text.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
-        let text = self.selected_text();
-        if !text.is_empty() {
+        if let Some(text) = self.doc.cut() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
-            let (a, b) = self.selection();
-            self.edit(a, b, "", false, cx);
+            self.touched(cx);
         }
     }
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
-            let (a, b) = self.selection();
-            self.edit(a, b, &text.replace("\r\n", "\n"), false, cx);
+            self.doc.paste(&text);
+            self.touched(cx);
         }
     }
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(cursor) = self.buffer.undo() {
-            self.cursor = cursor;
-            self.anchor = cursor;
-            self.reveal_cursor = true;
-            self.scroll_to_cursor();
-            cx.notify();
+        if self.doc.undo() {
+            self.touched(cx);
         }
     }
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(cursor) = self.buffer.redo() {
-            self.cursor = cursor;
-            self.anchor = cursor;
-            self.reveal_cursor = true;
-            self.scroll_to_cursor();
-            cx.notify();
+        if self.doc.redo() {
+            self.touched(cx);
         }
     }
     fn save_action(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
@@ -436,23 +301,20 @@ impl Editor {
         }
     }
 
-    // ---- mouse -----------------------------------------------------------------------------
+    // ---- mouse -----------------------------------------------------------------------------------
 
     fn pos_for_point(&self, position: Point<Pixels>) -> Pos {
         let layouts = self.layouts.borrow();
         let hit = layouts.iter().find(|(_, (_, b))| position.y >= b.top() && position.y < b.bottom());
         match hit {
-            Some((row, (line, bounds))) => {
-                let col = line.closest_index_for_x(position.x - bounds.left());
-                self.buffer.clamp(Pos::new(*row, col))
-            }
+            Some((row, (line, bounds))) => Pos::new(*row, line.closest_index_for_x(position.x - bounds.left())),
             None => {
                 // Above/below the painted rows: snap to the nearest end of the visible range.
                 let first = layouts.keys().min().copied().unwrap_or(0);
                 let last = layouts.keys().max().copied().unwrap_or(0);
                 match layouts.get(&first) {
                     Some((_, b)) if position.y < b.top() => Pos::new(first, 0),
-                    _ => Pos::new(last, self.buffer.line(last.min(self.buffer.line_count() - 1)).len()),
+                    _ => Pos::new(last, usize::MAX),
                 }
             }
         }
@@ -462,60 +324,18 @@ impl Editor {
         window.focus(&self.focus_handle);
         self.is_selecting = true;
         let pos = self.pos_for_point(ev.position);
-        self.set_cursor(pos, ev.modifiers.shift, cx);
-        self.reveal_cursor = false;
+        self.doc.set_cursor(pos, ev.modifiers.shift);
+        cx.notify();
     }
     fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.is_selecting {
             let pos = self.pos_for_point(ev.position);
-            self.cursor = pos;
+            self.doc.set_cursor(pos, true);
             cx.notify();
         }
     }
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.is_selecting = false;
-    }
-
-    // ---- UTF-16 offsets for the platform input handler ----------------------------------------
-
-    fn pos_to_utf16(&self, p: Pos) -> usize {
-        let mut n = 0;
-        for row in 0..p.row.min(self.buffer.line_count()) {
-            n += self.buffer.line(row).encode_utf16().count() + 1;
-        }
-        let line = self.buffer.line(p.row.min(self.buffer.line_count() - 1));
-        n + line[..p.col.min(line.len())].encode_utf16().count()
-    }
-
-    fn utf16_to_pos(&self, mut offset: usize) -> Pos {
-        for row in 0..self.buffer.line_count() {
-            let line = self.buffer.line(row);
-            let len = line.encode_utf16().count();
-            if offset <= len {
-                let mut units = 0;
-                for (i, ch) in line.char_indices() {
-                    if units >= offset {
-                        return Pos::new(row, i);
-                    }
-                    units += ch.len_utf16();
-                }
-                return Pos::new(row, line.len());
-            }
-            offset -= len + 1;
-        }
-        self.buffer.end()
-    }
-
-    fn content_width(&mut self) -> f32 {
-        if self.width_revision != self.buffer.revision() {
-            let cols = (0..self.buffer.line_count())
-                .map(|r| self.buffer.line(r).chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum::<usize>())
-                .max()
-                .unwrap_or(0);
-            self.content_width = GUTTER_W + cols as f32 * CHAR_W + 80.0;
-            self.width_revision = self.buffer.revision();
-        }
-        self.content_width
     }
 }
 
@@ -527,32 +347,27 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
-        let (a, b) = (self.utf16_to_pos(range_utf16.start), self.utf16_to_pos(range_utf16.end));
-        actual_range.replace(self.pos_to_utf16(a)..self.pos_to_utf16(b));
-        Some(self.buffer.text_in(a, b))
+        let (text, actual) = self.doc.text_in_utf16(range_utf16);
+        actual_range.replace(actual);
+        Some(text)
     }
 
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
-        let (a, b) = self.selection();
-        Some(UTF16Selection { range: self.pos_to_utf16(a)..self.pos_to_utf16(b), reversed: self.cursor < self.anchor })
+        let (range, reversed) = self.doc.selection_utf16();
+        Some(UTF16Selection { range, reversed })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.marked.map(|(a, b)| self.pos_to_utf16(a)..self.pos_to_utf16(b))
+        self.doc.marked_utf16()
     }
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked = None;
+        self.doc.unmark();
     }
 
     fn replace_text_in_range(&mut self, range_utf16: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
-        let (from, to) = match (range_utf16, self.marked) {
-            (Some(r), _) => (self.utf16_to_pos(r.start), self.utf16_to_pos(r.end)),
-            (None, Some((a, b))) => (a, b),
-            (None, None) => self.selection(),
-        };
-        let typing = self.marked.is_none() && text.chars().count() == 1;
-        self.edit(from, to, text, typing, cx);
+        self.doc.replace_utf16(range_utf16, text);
+        self.touched(cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -563,34 +378,17 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (from, to) = match (range_utf16, self.marked) {
-            (Some(r), _) => (self.utf16_to_pos(r.start), self.utf16_to_pos(r.end)),
-            (None, Some((a, b))) => (a, b),
-            (None, None) => self.selection(),
-        };
-        let end = self.buffer.replace(from, to, text, false);
-        self.marked = if text.is_empty() { None } else { Some((from, end)) };
-        let base = self.pos_to_utf16(from);
-        match new_selected_range_utf16 {
-            Some(r) => {
-                self.anchor = self.utf16_to_pos(base + r.start);
-                self.cursor = self.utf16_to_pos(base + r.end);
-            }
-            None => {
-                self.anchor = end;
-                self.cursor = end;
-            }
-        }
+        self.doc.replace_and_mark_utf16(range_utf16, text, new_selected_range_utf16);
         self.reveal_cursor = true;
         cx.notify();
     }
 
     fn bounds_for_range(&mut self, range_utf16: Range<usize>, _bounds: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
-        let start = self.utf16_to_pos(range_utf16.start);
-        let end = self.utf16_to_pos(range_utf16.end);
+        let start = self.doc.utf16_to_pos(range_utf16.start);
+        let end = self.doc.utf16_to_pos(range_utf16.end);
         let layouts = self.layouts.borrow();
         let (line, bounds) = layouts.get(&start.row)?;
-        let end_col = if end.row == start.row { end.col } else { self.buffer.line(start.row).len() };
+        let end_col = if end.row == start.row { end.col } else { self.doc.line(start.row).len() };
         Some(Bounds::from_corners(
             point(bounds.left() + line.x_for_index(start.col), bounds.top()),
             point(bounds.left() + line.x_for_index(end_col), bounds.bottom()),
@@ -598,7 +396,8 @@ impl EntityInputHandler for Editor {
     }
 
     fn character_index_for_point(&mut self, p: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
-        Some(self.pos_to_utf16(self.pos_for_point(p)))
+        let clamped = self.doc.clamp(self.pos_for_point(p));
+        Some(self.doc.pos_to_utf16(clamped))
     }
 }
 
@@ -648,8 +447,8 @@ impl gpui::Element for LineElement {
 
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> LinePrepaint {
         let editor = self.editor.read(cx);
-        let text: SharedString = editor.buffer.line(self.row).to_string().into();
-        let (sel_a, sel_b) = editor.selection();
+        let text: SharedString = editor.doc.line(self.row).to_string().into();
+        let (sel_a, sel_b) = editor.doc.selection();
         let style = window.text_style();
         let base = TextRun {
             len: text.len(),
@@ -659,7 +458,7 @@ impl gpui::Element for LineElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = match editor.marked.filter(|(a, b)| a.row == self.row && b.row == self.row) {
+        let runs = match editor.doc.marked().filter(|(a, b)| a.row == self.row && b.row == self.row) {
             Some((a, b)) => vec![
                 TextRun { len: a.col, ..base.clone() },
                 TextRun {
@@ -689,7 +488,7 @@ impl gpui::Element for LineElement {
                 Rgba { a: 0.28, ..AMBER() },
             )
         });
-        let cursor_x = (editor.cursor.row == row).then(|| line.x_for_index(editor.cursor.col));
+        let cursor_x = (editor.doc.cursor().row == row).then(|| line.x_for_index(editor.doc.cursor().col));
         let cursor = cursor_x.filter(|_| sel_a == sel_b).map(|x| {
             fill(Bounds::new(point(bounds.left() + x, bounds.top()), size(px(2.), bounds.size.height)), TEXT_STRONG())
         });
@@ -714,7 +513,7 @@ impl gpui::Element for LineElement {
         self.editor.update(cx, |editor, cx| {
             editor.layouts.borrow_mut().insert(row, (line, bounds));
             // Keep the caret in view horizontally after typing/moving (once, not on scroll).
-            if editor.reveal_cursor && editor.cursor.row == row {
+            if editor.reveal_cursor && editor.doc.cursor().row == row {
                 if let Some(x) = cursor_x {
                     let viewport = editor.hscroll.bounds();
                     let abs = bounds.left() + x;
@@ -749,7 +548,7 @@ impl Render for Editor {
         hscroll.style().restrict_scroll_to_axis = Some(true);
         let mut list = uniform_list(
             "editor-lines",
-            self.buffer.line_count(),
+            self.doc.line_count(),
             cx.processor(move |this, range: Range<usize>, _w, cx| {
                 let editor = cx.entity();
                 range
@@ -894,19 +693,9 @@ mod tests {
 
         let (editor, cx) = setup("abc\ndef", cx);
         cx.simulate_keystrokes("shift-right shift-right shift-down");
-        assert_eq!(editor.read_with(cx, |e, _| e.selected_text()), "abc\nde", "two right, then down keeps column 2");
+        assert_eq!(editor.read_with(cx, |e, _| e.doc.selected_text()), "abc\nde", "two right, then down keeps column 2");
         cx.simulate_keystrokes("left");
         assert_eq!(editor.read_with(cx, |e, _| e.cursor()), Pos::new(0, 0), "left collapses to the selection start");
-    }
-
-    #[gpui::test]
-    fn vertical_movement_remembers_the_column_across_short_lines(cx: &mut TestAppContext) {
-        let (editor, cx) = setup("abcdefgh\nab\nabcdefgh", cx);
-        editor.update(cx, |e, cx| e.set_cursor(Pos::new(0, 6), false, cx));
-        cx.simulate_keystrokes("down");
-        assert_eq!(editor.read_with(cx, |e, _| e.cursor()), Pos::new(1, 2), "clamped to the short line");
-        cx.simulate_keystrokes("down");
-        assert_eq!(editor.read_with(cx, |e, _| e.cursor()), Pos::new(2, 6), "and back to the goal column");
     }
 
     #[gpui::test]
@@ -945,23 +734,12 @@ mod tests {
         for composing in ["ㅎ", "하"] {
             editor.update_in(cx, |e, window, cx| e.replace_and_mark_text_in_range(None, composing, None, window, cx));
             assert_eq!(text(&editor, cx), composing);
-            assert!(editor.read_with(cx, |e, _| e.marked.is_some()), "still composing");
+            assert!(editor.read_with(cx, |e, _| e.doc.marked().is_some()), "still composing");
         }
         editor.update_in(cx, |e, window, cx| e.replace_text_in_range(None, "한", window, cx));
         assert_eq!(text(&editor, cx), "한");
-        assert!(editor.read_with(cx, |e, _| e.marked.is_none()));
+        assert!(editor.read_with(cx, |e, _| e.doc.marked().is_none()));
         assert_eq!(editor.read_with(cx, |e, _| e.cursor()), Pos::new(0, "한".len()));
     }
 
-    #[gpui::test]
-    fn utf16_offsets_round_trip_across_lines_and_wide_characters(cx: &mut TestAppContext) {
-        let (editor, _cx) = setup("a😀b\n안녕\nxyz", cx);
-        editor.read_with(_cx, |e, _| {
-            for pos in [Pos::new(0, 0), Pos::new(0, 1), Pos::new(0, 5), Pos::new(0, 6), Pos::new(1, 3), Pos::new(2, 2)] {
-                assert_eq!(e.utf16_to_pos(e.pos_to_utf16(pos)), pos, "{pos:?}");
-            }
-            // '😀' is two UTF-16 units, so 'b' starts at offset 3.
-            assert_eq!(e.pos_to_utf16(Pos::new(0, 5)), 3);
-        });
-    }
 }
