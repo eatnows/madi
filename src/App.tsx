@@ -705,6 +705,47 @@ function SimpleSelect<T extends string>({
   );
 }
 
+/** A second, explicit confirmation step for destructive actions — in-app styled instead of the
+ * native window.confirm(), matching the rest of the app's chrome. */
+function ConfirmModal({
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="confirm-modal-title">{title}</div>
+        <p className="confirm-modal-message">{message}</p>
+        <div className="confirm-modal-actions">
+          <button type="button" className="btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn--danger" onClick={onConfirm}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type FontChoice = "system" | "pretendard";
 const FONT_STORAGE_KEY = "maditor:font";
 
@@ -849,6 +890,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("sidebar");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; worktree: WorktreeInfo } | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<WorktreeInfo | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projects, setProjects] = useState<string[]>(() => loadProjects());
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
@@ -998,10 +1040,6 @@ function App() {
   }
 
   async function removeWorktree(wt: WorktreeInfo) {
-    const ok = window.confirm(
-      `Remove worktree "${wt.name}" (${wt.branch ?? "detached"})?\n\nThis deletes its working directory. Uncommitted changes will be lost.`,
-    );
-    if (!ok) return;
     setError(null);
     try {
       await invoke("remove_worktree", { repoPath, worktreePath: wt.path });
@@ -1306,7 +1344,7 @@ function App() {
               type="button"
               className="context-menu-item context-menu-item--danger"
               onClick={() => {
-                removeWorktree(contextMenu.worktree);
+                setConfirmRemove(contextMenu.worktree);
                 setContextMenu(null);
               }}
             >
@@ -1314,6 +1352,20 @@ function App() {
             </button>
           </div>
         </>
+      )}
+
+      {confirmRemove && (
+        <ConfirmModal
+          title="Remove worktree"
+          message={`Remove worktree "${confirmRemove.name}" (${confirmRemove.branch ?? "detached"})? This deletes its working directory. Uncommitted changes will be lost.`}
+          confirmLabel="Remove"
+          onConfirm={() => {
+            const wt = confirmRemove;
+            setConfirmRemove(null);
+            removeWorktree(wt);
+          }}
+          onCancel={() => setConfirmRemove(null)}
+        />
       )}
     </div>
   );

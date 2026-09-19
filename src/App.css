@@ -617,6 +617,54 @@ select {
   flex-direction: column;
 }
 
+.confirm-modal {
+  width: 360px;
+  padding: 18px 18px 14px;
+}
+
+.confirm-modal-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text-strong);
+}
+
+.confirm-modal-message {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.btn {
+  padding: 6px 14px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.btn:hover {
+  background: var(--selected-bg);
+}
+
+.btn--danger {
+  border-color: transparent;
+  background: var(--red);
+  color: #fff;
+}
+
+.btn--danger:hover {
+  opacity: 0.9;
+}
+
 .settings-header {
   height: 44px;
   flex: 0 0 auto;
