@@ -21,7 +21,7 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| app::Maditor::new(initial, maditor_project::config::Config::load(), cx));
+                let view = cx.new(|cx| app::Maditor::new(initial, maditor_project::config::Config::load(), window, cx));
                 // Repaint when the OS switches between light and dark (used by the "Auto" setting).
                 let observed = view.clone();
                 window

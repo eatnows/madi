@@ -6,21 +6,19 @@ mod sidebar;
 mod workspace;
 mod worktrees;
 
+use git_panel::{GitPanel, GitPanelEvent};
+
 use std::{
     collections::HashMap,
-    rc::Rc,
 };
 
 use gpui::{
-    actions, div, prelude::*, px, App, Context, FocusHandle, IntoElement,
-    KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
-    ScrollHandle, SharedString, UniformListScrollHandle, Window,
+    actions, div, prelude::*, px, App, Context, Entity, FocusHandle, IntoElement, KeyBinding,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollHandle, SharedString,
+    Subscription, Window,
 };
 use maditor_git::{
     diff::FileDiff,
-    diff_layout::DiffLayout,
-    git_log::CommitInfo,
-    graph::GraphRow,
     worktree::WorktreeInfo,
 };
 
@@ -63,27 +61,10 @@ enum SidebarView {
 }
 
 
-const GRAPH_PAGE: usize = 100;
-
+/// Draggable dividers of the app's own layout (the git panel manages its own).
 #[derive(Clone, Copy, PartialEq)]
 enum Resize {
     Sidebar,
-    GitHeight,
-    GraphPane,
-    CommitFiles,
-}
-
-impl Resize {
-    fn horizontal(self) -> bool {
-        self != Resize::GitHeight
-    }
-}
-
-struct Sizes {
-    sidebar: f32,
-    git_height: f32,
-    graph_pane: f32,
-    commit_files: f32,
 }
 
 enum FileItem {
@@ -120,35 +101,27 @@ pub struct Maditor {
     file_focus: FocusHandle,
     wt_scroll: ScrollHandle,
     file_scroll: ScrollHandle,
-    sizes: Sizes,
+    sidebar_width: f32,
     dragging: Option<(Resize, f32)>,
-    // git panel
     git_open: bool,
-    graph_branch: String,
-    follow_worktree: bool,
-    commits: Vec<CommitInfo>,
-    graph_rows: Vec<GraphRow>,
-    has_more: bool,
-    fetching: bool,
-    graph_gen: u64,
-    selected_oid: Option<String>,
-    detail_collapsed: bool,
-    commit_files: Vec<FileDiff>,
-    commit_diff: Rc<DiffLayout>,
-    cdiff_scroll: UniformListScrollHandle,
-    cdiff_hscroll: ScrollHandle,
-    selected_cfile: Option<usize>,
-    commit_gen: u64,
-    hovered_lane: Option<usize>,
-    graph_focus: FocusHandle,
-    cfile_focus: FocusHandle,
-    graph_scroll: UniformListScrollHandle,
-    graph_hscroll: ScrollHandle,
-    cfile_scroll: ScrollHandle,
+    git_panel: Entity<GitPanel>,
+    _git_panel_events: Subscription,
 }
 
 impl Maditor {
-    pub fn new(initial: Option<String>, config: Config, cx: &mut Context<Self>) -> Self {
+    pub fn new(initial: Option<String>, config: Config, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let git_panel = cx.new(|cx| GitPanel::new(cx));
+        let git_panel_events = cx.subscribe_in(&git_panel, window, |this, _, event: &GitPanelEvent, window, cx| match event {
+            GitPanelEvent::PickBranch(anchor) => this.open_picker(PickerTarget::GraphBranch, *anchor, window, cx),
+            GitPanelEvent::Close => {
+                this.git_open = false;
+                cx.notify();
+            }
+            GitPanelEvent::Error(message) => {
+                this.error = Some(message.clone());
+                cx.notify();
+            }
+        });
         let mut this = Self {
             config,
             repo: String::new(),
@@ -177,30 +150,11 @@ impl Maditor {
             file_focus: cx.focus_handle(),
             wt_scroll: ScrollHandle::new(),
             file_scroll: ScrollHandle::new(),
-            sizes: Sizes { sidebar: 280., git_height: 280., graph_pane: 460., commit_files: 220. },
+            sidebar_width: 280.,
             dragging: None,
             git_open: false,
-            graph_branch: String::new(),
-            follow_worktree: true,
-            commits: Vec::new(),
-            graph_rows: Vec::new(),
-            has_more: true,
-            fetching: false,
-            graph_gen: 0,
-            selected_oid: None,
-            detail_collapsed: false,
-            commit_files: Vec::new(),
-            commit_diff: Rc::default(),
-            cdiff_scroll: UniformListScrollHandle::new(),
-            cdiff_hscroll: ScrollHandle::new(),
-            selected_cfile: None,
-            commit_gen: 0,
-            hovered_lane: None,
-            graph_focus: cx.focus_handle(),
-            cfile_focus: cx.focus_handle(),
-            graph_scroll: UniformListScrollHandle::new(),
-            graph_hscroll: ScrollHandle::new(),
-            cfile_scroll: ScrollHandle::new(),
+            git_panel,
+            _git_panel_events: git_panel_events,
         };
         if let Some(path) = initial.or_else(|| this.config.last_project.clone()) {
             this.open_project(path, cx);
@@ -286,38 +240,6 @@ impl Maditor {
 
 }
 
-/// One changed-file row (status letter, path, +/- counts); the caller adds the click handler.
-fn file_row(id: impl Into<gpui::ElementId>, f: &FileDiff, selected: bool) -> gpui::Stateful<gpui::Div> {
-    let (letter, color) = match f.status.as_str() {
-        "added" => ("A", GREEN()),
-        "deleted" => ("D", RED()),
-        _ => ("M", AMBER()),
-    };
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .cursor_pointer()
-        .when(selected, |d| d.bg(SELECTED()))
-        .hover(|d| d.bg(SELECTED()))
-        .child(div().w(px(12.)).flex_none().text_color(color).child(letter))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_color(TEXT())
-                .child(f.path.clone()),
-        )
-        .child(div().text_xs().text_color(ADD_FG()).child(format!("+{}", f.additions)))
-        .child(div().text_xs().text_color(DEL_FG()).child(format!("-{}", f.deletions)))
-}
 
 
 fn empty(message: impl Into<SharedString>) -> impl IntoElement {
@@ -358,12 +280,35 @@ impl Maditor {
                 .into_any_element();
         }
         // Room for a diff tab: the window minus the rail, the sidebar and its drag handle.
-        let editor_width = viewport_w - 48. - self.sizes.sidebar - 5.;
+        let editor_width = viewport_w - 48. - self.sidebar_width - 5.;
         row()
             .child(self.sidebar(cx))
-            .child(self.resize_handle(Resize::Sidebar, cx))
+            .child(maditor_ui::resize::handle("rz-sidebar", true, cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                this.dragging = Some((Resize::Sidebar, f32::from(ev.position.x)));
+            })))
             .child(self.editor_area(editor_width, cx))
             .into_any_element()
+    }
+}
+
+impl Maditor {
+    /// Window-wide mouse moves drive whichever divider is being dragged (the sidebar's here, the
+    /// git panel's own in the panel).
+    fn on_mouse_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if let Some((Resize::Sidebar, last)) = self.dragging {
+            let x = f32::from(ev.position.x);
+            self.sidebar_width = (self.sidebar_width + x - last).clamp(200., 520.);
+            self.dragging = Some((Resize::Sidebar, x));
+            cx.notify();
+        }
+        if self.git_open {
+            self.git_panel.update(cx, |panel, cx| panel.drag_to(ev, cx));
+        }
+    }
+
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        self.dragging = None;
+        self.git_panel.update(cx, |panel, _| panel.end_drag());
     }
 }
 
@@ -377,15 +322,15 @@ impl Render for Maditor {
             .size_full()
             .flex()
             .flex_col()
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| this.on_root_mouse_move(ev, cx)))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.dragging = None))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.dragging = None))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| this.on_mouse_move(ev, cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_drag(cx)))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_drag(cx)))
             .bg(BG())
             .text_color(TEXT())
             .text_size(px(13.))
             .child(self.topbar(cx))
             .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.main_area(viewport_w, cx)))
-            .when(repo_ok && self.git_open, |d| d.child(self.git_panel(viewport_w, cx)))
+            .when(repo_ok && self.git_open, |d| d.child(self.git_panel.clone()))
             .child(self.status_bar(cx))
             .children(self.context_menu(cx))
             .children(self.confirm_modal(cx))

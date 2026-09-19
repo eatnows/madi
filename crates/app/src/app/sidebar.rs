@@ -1,10 +1,10 @@
 //! The sidebar: the project's files, or its git worktrees with the changes of the selected one.
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent};
 
-use super::{file_row, FileItem, Maditor, MenuTarget, PickerTarget, SelectNext, SelectPrev, SidebarView};
+use super::{FileItem, Maditor, MenuTarget, PickerTarget, SelectNext, SelectPrev, SidebarView};
 use maditor_project::scan::Issue;
 
-use maditor_ui::{scroll::axis_locked, theme::*};
+use maditor_ui::{file_row::file_row, scroll::axis_locked, theme::*};
 
 impl Maditor {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -30,7 +30,7 @@ impl Maditor {
             SidebarView::Worktrees => self.worktrees_view(cx),
         };
         div()
-            .w(px(self.sizes.sidebar))
+            .w(px(self.sidebar_width))
             .flex_none()
             .flex()
             .flex_col()

@@ -91,11 +91,7 @@ impl Maditor {
                 match target {
                     PickerTarget::WorktreeBase(path) => self.change_base(path, full_path, cx),
                     PickerTarget::GraphBranch => {
-                        self.follow_worktree = false;
-                        if self.graph_branch != full_path {
-                            self.graph_branch = full_path;
-                            self.load_graph(cx);
-                        }
+                        self.git_panel.update(cx, |panel, cx| panel.pin(full_path, cx));
                     }
                 }
             }
@@ -116,7 +112,7 @@ impl Maditor {
         let p = self.picker.as_ref()?;
         let current = match &p.target {
             PickerTarget::WorktreeBase(path) => self.pins.get(path).cloned().unwrap_or_default(),
-            PickerTarget::GraphBranch => self.graph_branch.clone(),
+            PickerTarget::GraphBranch => self.git_panel.read(cx).branch().to_string(),
         };
         let viewport = window.viewport_size();
         let left = p.anchor.x.min(viewport.width - px(WIDTH + 8.)).max(px(8.));

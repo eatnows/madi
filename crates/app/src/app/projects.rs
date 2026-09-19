@@ -27,14 +27,12 @@ impl Maditor {
         self.selected_file = None;
         self.loading_diff = false;
         self.diff_gen += 1;
-        self.follow_worktree = true;
-        self.graph_branch.clear();
-        self.clear_graph();
     }
 
     pub(super) fn scan(&mut self, path: String, cx: &mut Context<Self>) {
         self.reset_view();
         self.repo = path.clone();
+        self.git_panel.update(cx, |panel, cx| panel.reset(path.clone(), cx));
         self.scan_gen += 1;
         let generation = self.scan_gen;
         let saved = self.config.pins.get(&path).cloned().unwrap_or_default();
@@ -121,6 +119,7 @@ impl Maditor {
                 None => {
                     self.reset_view();
                     self.repo.clear();
+                    self.git_panel.update(cx, |panel, cx| panel.reset(String::new(), cx));
                 }
             }
         }

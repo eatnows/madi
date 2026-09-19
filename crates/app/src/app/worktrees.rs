@@ -7,9 +7,26 @@ use maditor_ui::scroll::scroll_to_top;
 use super::{FileItem, Maditor};
 
 impl Maditor {
+    /// While the git panel follows the selected worktree it shows that worktree's branch (or the
+    /// default branch when only a project is selected).
+    pub(super) fn sync_graph_branch(&mut self, cx: &mut Context<Self>) {
+        let target = self
+            .selected_wt
+            .and_then(|i| self.worktrees.get(i))
+            .and_then(|w| w.branch.clone())
+            .or_else(|| {
+                if self.branches.iter().any(|b| b == "main") {
+                    Some("main".to_string())
+                } else {
+                    self.branches.first().cloned()
+                }
+            });
+        self.git_panel.update(cx, |panel, cx| panel.follow(target, cx));
+    }
+
     pub(super) fn select_worktree(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_wt = Some(ix);
-        self.follow_worktree = true;
+        self.git_panel.update(cx, |panel, _| panel.resume_following());
         self.sync_graph_branch(cx);
         self.files.clear();
         self.file_items.clear();
@@ -87,7 +104,7 @@ impl Maditor {
                                 this.files.clear();
                                 this.file_items.clear();
                                 this.selected_file = None;
-                                this.follow_worktree = true;
+                                this.git_panel.update(cx, |panel, _| panel.resume_following());
                                 this.sync_graph_branch(cx);
                             }
                             _ => {}

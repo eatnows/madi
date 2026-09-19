@@ -56,6 +56,7 @@ impl Maditor {
 
     pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let repo_ok = !self.repo.is_empty() && self.issue.is_none();
+        let graph_branch = self.git_panel.read(cx).branch().to_string();
         let details = match self.active_tab().map(|t| &t.body) {
             Some(TabBody::File(editor)) => {
                 let editor = editor.read(cx);
@@ -92,8 +93,8 @@ impl Maditor {
                         }))
                         .child("Graph"),
                 )
-                .when(!self.graph_branch.is_empty(), |d| {
-                    d.child(div().font_family(MONO).text_color(TEXT_DIM()).child(self.graph_branch.clone()))
+                .when(!graph_branch.is_empty(), |d| {
+                    d.child(div().font_family(MONO).text_color(TEXT_DIM()).child(graph_branch.clone()))
                 })
             })
             .child(div().flex_1())
