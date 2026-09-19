@@ -318,7 +318,10 @@ function GraphLane({
         const d = `M ${x(lane)} 0 C ${x(lane)} 10, ${x(row.lane)} 8, ${x(row.lane)} 18`;
         return (
           <g key={`c${lane}`}>
-            <path d={d} stroke={laneColor(lane)} strokeWidth={2} fill="none" opacity={opacity(lane, row.lane)} pointerEvents="none" />
+            {/* Colored (and hover-matched) by `lane` alone — its own merging branch — not also
+             * by `row.lane`, which drew this curve as "derived" whenever the unrelated,
+             * differently-colored mainline was hovered instead. */}
+            <path d={d} stroke={laneColor(lane)} strokeWidth={2} fill="none" opacity={opacity(lane)} pointerEvents="none" />
             <path d={d} fill="none" {...hitProps(lane)} />
           </g>
         );
@@ -327,7 +330,7 @@ function GraphLane({
         const d = `M ${x(row.lane)} 18 C ${x(row.lane)} 28, ${x(lane)} 26, ${x(lane)} 36`;
         return (
           <g key={`d${lane}`}>
-            <path d={d} stroke={laneColor(lane)} strokeWidth={2} fill="none" opacity={opacity(lane, row.lane)} pointerEvents="none" />
+            <path d={d} stroke={laneColor(lane)} strokeWidth={2} fill="none" opacity={opacity(lane)} pointerEvents="none" />
             <path d={d} fill="none" {...hitProps(lane)} />
           </g>
         );
