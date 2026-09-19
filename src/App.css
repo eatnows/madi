@@ -467,7 +467,10 @@ select {
   /* auto: this column tracks each row's own lane count, so the message/author/date columns move
      with the graph's real shape (wider where branches are open, narrower where it's converged)
      instead of being clipped by, or fighting, a width capped/shared across rows. */
-  grid-template-columns: auto 1fr 140px 96px 76px;
+  grid-template-columns: auto minmax(280px, 1fr) 140px 96px 76px;
+  /* Wide enough that the message never gets squeezed by the meta columns; a narrower pane scrolls
+     horizontally (.graph-area) instead. Every row shares this floor so backgrounds line up. */
+  min-width: 820px;
   align-items: center;
   height: 36px;
   padding: 0 16px;
