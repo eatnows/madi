@@ -1,4 +1,4 @@
-//! Light and dark palettes (mirroring the webview app's CSS tokens). Colors are functions that
+//! Light and dark palettes. Colors are functions that
 //! read the current mode, so a mode switch takes effect on the next frame with no plumbing.
 use std::sync::atomic::{AtomicBool, Ordering};
 
