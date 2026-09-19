@@ -1,15 +1,16 @@
 mod app;
+mod config;
+mod diff_view;
 mod theme;
 
 use gpui::{prelude::*, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
 fn main() {
-    let repo = std::env::args()
-        .nth(1)
-        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| ".".into());
+    // Optional first argument: a repo to open (added to the saved project list).
+    let initial = std::env::args().nth(1);
 
     Application::new().run(move |cx: &mut App| {
+        app::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         cx.open_window(
             WindowOptions {
@@ -20,7 +21,7 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| app::Maditor::new(repo)),
+            |_, cx| cx.new(|cx| app::Maditor::new(initial, config::Config::load(), cx)),
         )
         .unwrap();
         cx.activate(true);
