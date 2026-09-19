@@ -1,34 +1,26 @@
-use gpui::{
-    div, prelude::*, px, rgb, size, App, Application, Bounds, Context, SharedString, Window,
-    WindowBounds, WindowOptions,
-};
+mod app;
+mod theme;
 
-struct Hello {
-    text: SharedString,
-}
-
-impl Render for Hello {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .size_full()
-            .justify_center()
-            .items_center()
-            .bg(rgb(0x101112))
-            .text_color(rgb(0xe2e3e4))
-            .child(self.text.clone())
-    }
-}
+use gpui::{prelude::*, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
+    let repo = std::env::args()
+        .nth(1)
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".into());
+
+    Application::new().run(move |cx: &mut App| {
+        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Maditor".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| Hello { text: "maditor (native)".into() }),
+            |_, cx| cx.new(|_| app::Maditor::new(repo)),
         )
         .unwrap();
         cx.activate(true);
