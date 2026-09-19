@@ -13,7 +13,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::buffer::{Buffer, Pos};
+use maditor_text::{Buffer, Pos};
 use crate::theme::*;
 
 actions!(
