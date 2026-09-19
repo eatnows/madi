@@ -173,6 +173,7 @@ pub struct Maditor {
     graph_focus: FocusHandle,
     cfile_focus: FocusHandle,
     graph_scroll: UniformListScrollHandle,
+    graph_hscroll: ScrollHandle,
     cfile_scroll: ScrollHandle,
 }
 
@@ -222,6 +223,7 @@ impl Maditor {
             graph_focus: cx.focus_handle(),
             cfile_focus: cx.focus_handle(),
             graph_scroll: UniformListScrollHandle::new(),
+            graph_hscroll: ScrollHandle::new(),
             cfile_scroll: ScrollHandle::new(),
         };
         if let Some(path) = initial.or_else(|| this.config.last_project.clone()) {
@@ -1333,6 +1335,44 @@ mod tests {
             assert_eq!(m.selected_wt, None);
             assert!(m.files.is_empty() && m.rows.is_empty());
             assert_eq!(m.graph_branch, "main", "the graph falls back to the default branch");
+        });
+    }
+
+    #[gpui::test]
+    fn vertical_wheel_over_the_graph_scrolls_the_list_not_sideways(cx: &mut TestAppContext) {
+        let (root, repo) = fixture("wheel");
+        // Enough history that the list overflows vertically.
+        for i in 0..40 {
+            std::fs::write(repo.join("a.txt"), format!("rev {i}\n")).unwrap();
+            git(&repo, &["commit", "-qam", &format!("commit {i}")]);
+        }
+        let path = repo.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
+        cx.run_until_parked();
+        view.update(cx, |m, cx| {
+            m.git_open = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let viewport = cx.update(|window, _| window.viewport_size());
+        // Over the graph list: bottom-left region, above the bottom bar.
+        let over_graph = gpui::point(gpui::px(300.), viewport.height - gpui::px(150.));
+        cx.simulate_mouse_move(over_graph, None, gpui::Modifiers::default());
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: over_graph,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-120.))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |m, _| {
+            let list = m.graph_scroll.0.borrow().base_handle.offset();
+            let sideways = m.graph_hscroll.offset();
+            assert!(list.y < gpui::px(0.), "the list scrolled down: {list:?}");
+            assert_eq!(sideways.x, gpui::px(0.), "and did not move sideways: {sideways:?}");
         });
     }
 

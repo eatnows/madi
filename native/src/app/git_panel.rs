@@ -557,12 +557,16 @@ impl Maditor {
                     .child("×"),
             );
 
-        let graph_list = div()
+        // gpui turns vertical wheel input into horizontal scroll on a container that only scrolls
+        // horizontally; restricting it to its axis leaves vertical scrolling to the list inside.
+        let mut graph_list = div()
             .id("graph-scroll")
             .flex_1()
             .min_h_0()
             .overflow_x_scroll()
-            .child(
+            .track_scroll(&self.graph_hscroll);
+        graph_list.style().restrict_scroll_to_axis = Some(true);
+        let graph_list = graph_list.child(
                 uniform_list(
                     "graph",
                     self.commits.len(),
