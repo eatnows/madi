@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn walks_main_branch_history() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let commits = git_log(repo_root, "main".to_string(), 0, 5).expect("git_log should succeed");
         assert!(!commits.is_empty());
         // Topological order: every commit's parent, if within the page, must appear later.
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn skip_pages_through_the_same_sequence() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let whole = git_log(repo_root.clone(), "main".to_string(), 0, 4).unwrap();
         let page1 = git_log(repo_root.clone(), "main".to_string(), 0, 2).unwrap();
         let page2 = git_log(repo_root, "main".to_string(), 2, 2).unwrap();

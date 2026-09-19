@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn diffs_this_repo_against_main() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let result = diff_against_base(repo_root, "main".to_string())
             .expect("diff_against_base should succeed");
         // HEAD is on main itself in this dev checkout, so there should be no committed diff.

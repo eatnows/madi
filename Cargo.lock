@@ -3186,7 +3186,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "maditor-native"
+name = "maditor-ui"
 version = "0.1.0"
 dependencies = [
  "chrono",

@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn check_repo_distinguishes_missing_plain_dir_and_repo() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         assert_eq!(check_repo(repo_root), RepoStatus::Ok);
 
         let plain = std::env::temp_dir().join("maditor-check-repo-plain-dir");
@@ -156,14 +156,14 @@ mod tests {
 
     #[test]
     fn lists_main_worktree_of_this_repo() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let worktrees = list_worktrees(repo_root, HashMap::new()).expect("list_worktrees should succeed");
         assert!(worktrees.iter().any(|w| w.is_main));
     }
 
     #[test]
     fn computes_ahead_behind_against_pinned_base_branch() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let main_workdir = Repository::open(&repo_root).unwrap().workdir().unwrap().to_string_lossy().into_owned();
         let mut base_branches = HashMap::new();
         base_branches.insert(main_workdir, "main".to_string());
@@ -177,14 +177,14 @@ mod tests {
 
     #[test]
     fn lists_main_branch_of_this_repo() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let branches = list_branches(repo_root).expect("list_branches should succeed");
         assert!(branches.iter().any(|b| b == "main"));
     }
 
     #[test]
     fn refuses_to_remove_the_main_worktree() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let main_workdir = Repository::open(&repo_root).unwrap().workdir().unwrap().to_string_lossy().into_owned();
         let err = remove_worktree(repo_root, main_workdir).unwrap_err();
         assert!(err.contains("main working directory"));
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn removes_a_linked_worktree_and_its_directory() {
-        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         let branch_name = "test/remove-worktree-tmp";
         let scratch_dir = std::env::temp_dir().join(format!(
             "worktree-viewer-remove-test-{}",
