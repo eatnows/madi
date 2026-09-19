@@ -30,14 +30,14 @@ impl Maditor {
                 .text_xs()
                 .font_family(MONO)
                 .cursor_pointer()
-                .when(highlighted, |d| d.bg(SELECTED))
-                .hover(|d| d.bg(SELECTED))
+                .when(highlighted, |d| d.bg(SELECTED()))
+                .hover(|d| d.bg(SELECTED()))
                 .on_click(cx.listener(move |this, _, window, cx| this.picker_activate(i, window, cx)));
             match row {
                 PickerRow::Folder { segment, depth, full_path } => {
                     let open = !p.collapsed.contains(&full_path) || !p.last_query.is_empty();
                     base.pl(px(8. + depth as f32 * 14.))
-                        .text_color(TEXT_DIM)
+                        .text_color(TEXT_DIM())
                         .child(if open { "▾" } else { "▸" })
                         .child(segment)
                 }
@@ -46,9 +46,9 @@ impl Maditor {
                     let selected = full_path == current;
                     base.pl(px(8. + depth as f32 * 14.))
                         .justify_between()
-                        .text_color(TEXT_STRONG)
+                        .text_color(TEXT_STRONG())
                         .child(label)
-                        .when(selected, |d| d.child(div().text_color(GREEN).child("✓")))
+                        .when(selected, |d| d.child(div().text_color(GREEN()).child("✓")))
                 }
             }
         });
@@ -78,10 +78,10 @@ impl Maditor {
                         .top(top)
                         .w(px(WIDTH))
                         .rounded_md()
-                        .bg(CHROME)
+                        .bg(CHROME())
                         .border_1()
-                        .border_color(BORDER)
-                        .child(div().border_b_1().border_color(BORDER_SOFT).text_color(TEXT_STRONG).child(p.input.clone()))
+                        .border_color(BORDER())
+                        .child(div().border_b_1().border_color(BORDER_SOFT()).text_color(TEXT_STRONG()).child(p.input.clone()))
                         .child(
                             super::axis_locked(div().id("picker-list"))
                                 .max_h(px(LIST_MAX_H))

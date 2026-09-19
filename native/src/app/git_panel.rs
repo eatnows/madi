@@ -10,11 +10,11 @@ use gpui::{
 use maditor_core::{diff, git_log};
 
 use super::{
-    axis_locked, list_scroll_to_top, scroll_to_top, Maditor, PickerTarget, Resize, SelectNext,
+    axis_locked, list_scroll_to_top, DiffWhich, scroll_to_top, Maditor, PickerTarget, Resize, SelectNext,
     SelectPrev, GRAPH_PAGE,
 };
 use crate::{
-    diff_view::{build_rows, content_width, render_row},
+    diff_view::DiffData,
     graph::{self, GraphRow},
     theme::*,
 };
@@ -136,7 +136,7 @@ impl Maditor {
         self.commit_gen += 1;
         self.selected_oid = None;
         self.commit_files.clear();
-        self.commit_rows.clear();
+        self.commit_diff.clear();
         self.selected_cfile = None;
         scroll_to_top(&self.cfile_scroll);
         self.reset_cdiff_scroll();
@@ -185,8 +185,7 @@ impl Maditor {
 
     fn select_cfile(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_cfile = Some(ix);
-        self.commit_rows = build_rows(&self.commit_files[ix].lines);
-        self.cdiff_min_w = content_width(&self.commit_rows);
+        self.commit_diff = DiffData::new(&self.commit_files[ix].lines);
         self.reset_cdiff_scroll();
         cx.notify();
     }
@@ -252,7 +251,7 @@ impl Maditor {
         let base = div()
             .id(id)
             .flex_none()
-            .hover(|d| d.bg(BORDER))
+            .hover(|d| d.bg(BORDER()))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, _| {
@@ -278,9 +277,9 @@ impl Maditor {
             .flex()
             .items_center()
             .px_3()
-            .bg(CHROME)
+            .bg(CHROME())
             .border_t_1()
-            .border_color(BORDER)
+            .border_color(BORDER())
             .child(
                 div()
                     .id("graph-tab")
@@ -289,8 +288,8 @@ impl Maditor {
                     .rounded_md()
                     .text_xs()
                     .cursor_pointer()
-                    .when(self.git_open, |d| d.bg(SELECTED).text_color(TEXT_STRONG))
-                    .when(!self.git_open, |d| d.text_color(TEXT_DIM).hover(|d| d.bg(PANEL)))
+                    .when(self.git_open, |d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
+                    .when(!self.git_open, |d| d.text_color(TEXT_DIM()).hover(|d| d.bg(PANEL())))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.git_open = !this.git_open;
                         cx.notify();
@@ -405,8 +404,8 @@ impl Maditor {
             .min_w(px(GRAPH_MIN_W))
             .px_4()
             .cursor_pointer()
-            .when(selected, |d| d.bg(SELECTED).border_l_2().border_color(AMBER))
-            .hover(|d| d.bg(SELECTED))
+            .when(selected, |d| d.bg(SELECTED()).border_l_2().border_color(AMBER()))
+            .hover(|d| d.bg(SELECTED()))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 window.focus(&this.graph_focus);
                 this.select_commit(ix, true, cx);
@@ -420,7 +419,7 @@ impl Maditor {
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .text_size(px(12.5))
-                    .text_color(TEXT_STRONG)
+                    .text_color(TEXT_STRONG())
                     .child(commit.summary.clone()),
             )
             .child(
@@ -433,7 +432,7 @@ impl Maditor {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(px(11.5))
-                    .text_color(TEXT_DIM)
+                    .text_color(TEXT_DIM())
                     .child(div().size(px(16.)).flex_none().rounded_full().bg(lane_color(row.lane)))
                     .child(commit.author_name.clone()),
             )
@@ -442,7 +441,7 @@ impl Maditor {
                     .w(px(96.))
                     .flex_none()
                     .text_size(px(11.))
-                    .text_color(TEXT_DIM)
+                    .text_color(TEXT_DIM())
                     .child(graph::relative_time(now, commit.timestamp)),
             )
             .child(
@@ -452,7 +451,7 @@ impl Maditor {
                     .text_right()
                     .font_family(MONO)
                     .text_size(px(11.))
-                    .text_color(TEXT_DIM)
+                    .text_color(TEXT_DIM())
                     .child(commit.short_oid.clone()),
             )
     }
@@ -474,7 +473,7 @@ impl Maditor {
                 .px_4()
                 .py_2()
                 .border_t_1()
-                .border_color(BORDER_SOFT)
+                .border_color(BORDER_SOFT())
                 .child(
                     div()
                         .id("commit-detail-close")
@@ -484,15 +483,15 @@ impl Maditor {
                         .px_2()
                         .rounded_md()
                         .cursor_pointer()
-                        .text_color(TEXT_DIM)
-                        .hover(|d| d.bg(SELECTED).text_color(TEXT_STRONG))
+                        .text_color(TEXT_DIM())
+                        .hover(|d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.detail_collapsed = true;
                             cx.notify();
                         }))
                         .child("×"),
                 )
-                .child(div().pr_6().text_size(px(12.5)).text_color(TEXT_STRONG).child(commit.summary.clone()))
+                .child(div().pr_6().text_size(px(12.5)).text_color(TEXT_STRONG()).child(commit.summary.clone()))
                 .when(!commit.body.trim().is_empty(), |d| {
                     d.child(
                         axis_locked(div().id("commit-body"))
@@ -501,7 +500,7 @@ impl Maditor {
                             .overflow_y_scroll()
                             .font_family(MONO)
                             .text_size(px(11.5))
-                            .text_color(TEXT_DIM)
+                            .text_color(TEXT_DIM())
                             .child(commit.body.trim().to_string()),
                     )
                 })
@@ -509,13 +508,13 @@ impl Maditor {
                     div()
                         .mt_1()
                         .text_size(px(10.5))
-                        .text_color(TEXT_DIM)
+                        .text_color(TEXT_DIM())
                         .child(format!("{} <{}> · {} · {}", commit.author_name, commit.author_email, when, commit.oid)),
                 ),
         )
     }
 
-    pub(super) fn git_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn git_panel(&self, viewport_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let following = self.follow_worktree;
         let header = div()
             .flex_none()
@@ -525,8 +524,8 @@ impl Maditor {
             .gap_3()
             .px_4()
             .border_b_1()
-            .border_color(BORDER_SOFT)
-            .child(div().text_size(px(12.5)).text_color(TEXT_STRONG).child("Git"))
+            .border_color(BORDER_SOFT())
+            .child(div().text_size(px(12.5)).text_color(TEXT_STRONG()).child("Git"))
             .child(
                 div()
                     .id("graph-branch")
@@ -535,9 +534,9 @@ impl Maditor {
                     .rounded_md()
                     .font_family(MONO)
                     .text_size(px(11.))
-                    .text_color(TEXT_STRONG)
+                    .text_color(TEXT_STRONG())
                     .cursor_pointer()
-                    .hover(|d| d.bg(SELECTED))
+                    .hover(|d| d.bg(SELECTED()))
                     .on_click(cx.listener(|this, ev: &ClickEvent, window, cx| {
                         this.open_picker(PickerTarget::GraphBranch, ev.position(), window, cx)
                     }))
@@ -548,8 +547,8 @@ impl Maditor {
                     .px_2()
                     .rounded_full()
                     .text_size(px(10.5))
-                    .when(following, |d| d.text_color(GREEN).bg(ADD_BG))
-                    .when(!following, |d| d.text_color(AMBER).bg(SELECTED))
+                    .when(following, |d| d.text_color(GREEN()).bg(ADD_BG()))
+                    .when(!following, |d| d.text_color(AMBER()).bg(SELECTED()))
                     .child(if following { "following worktree" } else { "pinned" }),
             )
             .child(div().flex_1())
@@ -559,8 +558,8 @@ impl Maditor {
                     .px_2()
                     .rounded_md()
                     .cursor_pointer()
-                    .text_color(TEXT_DIM)
-                    .hover(|d| d.bg(SELECTED).text_color(TEXT_STRONG))
+                    .text_color(TEXT_DIM())
+                    .hover(|d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.git_open = false;
                         cx.notify();
@@ -598,7 +597,7 @@ impl Maditor {
             .flex_col()
             .min_h_0()
             .border_r_1()
-            .border_color(BORDER)
+            .border_color(BORDER())
             .child(graph_list)
             .children(self.commit_detail(cx));
 
@@ -608,7 +607,7 @@ impl Maditor {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(TEXT_DIM)
+                .text_color(TEXT_DIM())
                 .child("Select a commit to see its changed files")
                 .into_any_element()
         } else {
@@ -636,28 +635,15 @@ impl Maditor {
                         .track_scroll(&self.cfile_scroll)
                         .p_2()
                         .border_r_1()
-                        .border_color(BORDER)
+                        .border_color(BORDER())
                         .children(items),
                 )
                 .child(self.resize_handle(Resize::CommitFiles, cx))
-                .child(
-                    axis_locked(div().id("cdiff-hscroll").flex_1().min_w_0().bg(BG).overflow_x_scroll())
-                        .track_scroll(&self.cdiff_hscroll)
-                        .child(
-                            axis_locked(uniform_list(
-                                "commit-diff",
-                                self.commit_rows.len(),
-                                cx.processor(|this, range: Range<usize>, _w, _cx| {
-                                    range.map(|ix| render_row(&this.commit_rows[ix])).collect::<Vec<_>>()
-                                }),
-                            ))
-                            .track_scroll(self.cdiff_scroll.clone())
-                            .min_w(px(self.cdiff_min_w))
-                            .h_full()
-                            .font_family(MONO)
-                            .text_size(px(12.)),
-                        ),
-                )
+                .child(self.diff_pane(
+                    DiffWhich::Commit,
+                    viewport_w - self.sizes.graph_pane - self.sizes.commit_files - 11.,
+                    cx,
+                ))
                 .into_any_element()
         };
 
@@ -667,9 +653,9 @@ impl Maditor {
             .h(px(self.sizes.git_height))
             .flex()
             .flex_col()
-            .bg(PANEL)
+            .bg(PANEL())
             .border_t_1()
-            .border_color(BORDER)
+            .border_color(BORDER())
             .child(self.resize_handle(Resize::GitHeight, cx))
             .child(header)
             .child(

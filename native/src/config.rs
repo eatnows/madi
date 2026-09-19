@@ -4,8 +4,41 @@ use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Light/dark choice: follow the OS, or force one.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Appearance {
+    pub fn next(self) -> Self {
+        match self {
+            Appearance::System => Appearance::Light,
+            Appearance::Light => Appearance::Dark,
+            Appearance::Dark => Appearance::System,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Appearance::System => "Auto",
+            Appearance::Light => "Light",
+            Appearance::Dark => "Dark",
+        }
+    }
+}
+
+/// `default` on the whole struct: a config missing a field (older file, hand-edited, or written by a
+/// build before the field existed) must keep what it does have instead of failing to parse and
+/// silently resetting everything, including the registered projects.
 #[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Config {
+    pub appearance: Appearance,
     pub projects: Vec<String>,
     pub last_project: Option<String>,
     /// repo path -> (worktree path -> base branch)
@@ -53,5 +86,23 @@ impl Config {
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, json);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_partial_config_keeps_the_fields_it_has() {
+        let dir = std::env::temp_dir().join("maditor-native-test-config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("partial.json");
+        std::fs::write(&path, r#"{"projects":["/a","/b"],"appearance":"dark"}"#).unwrap();
+
+        let config = Config::at(Some(path));
+        assert_eq!(config.projects, ["/a", "/b"]);
+        assert_eq!(config.appearance, Appearance::Dark);
+        assert!(config.pins.is_empty() && config.last_project.is_none());
     }
 }

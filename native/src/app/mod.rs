@@ -19,8 +19,8 @@ use maditor_core::{
 };
 
 use crate::{
-    config::Config,
-    diff_view::{build_rows, content_width, render_row, Row},
+    config::{Appearance, Config},
+    diff_view::{DiffData, SPLIT_MIN_WIDTH},
     graph::GraphRow,
     picker,
     text_input::TextInput,
@@ -140,8 +140,7 @@ pub struct Maditor {
     files: Vec<FileDiff>,
     file_items: Vec<FileItem>,
     selected_file: Option<usize>,
-    rows: Vec<Row>,
-    diff_min_w: f32,
+    file_diff: DiffData,
     diff_scroll: UniformListScrollHandle,
     diff_hscroll: ScrollHandle,
     loading_diff: bool,
@@ -169,8 +168,7 @@ pub struct Maditor {
     selected_oid: Option<String>,
     detail_collapsed: bool,
     commit_files: Vec<FileDiff>,
-    commit_rows: Vec<Row>,
-    cdiff_min_w: f32,
+    commit_diff: DiffData,
     cdiff_scroll: UniformListScrollHandle,
     cdiff_hscroll: ScrollHandle,
     selected_cfile: Option<usize>,
@@ -198,8 +196,7 @@ impl Maditor {
             files: Vec::new(),
             file_items: Vec::new(),
             selected_file: None,
-            rows: Vec::new(),
-            diff_min_w: 0.,
+            file_diff: DiffData::default(),
             diff_scroll: UniformListScrollHandle::new(),
             diff_hscroll: ScrollHandle::new(),
             loading_diff: false,
@@ -225,8 +222,7 @@ impl Maditor {
             selected_oid: None,
             detail_collapsed: false,
             commit_files: Vec::new(),
-            commit_rows: Vec::new(),
-            cdiff_min_w: 0.,
+            commit_diff: DiffData::default(),
             cdiff_scroll: UniformListScrollHandle::new(),
             cdiff_hscroll: ScrollHandle::new(),
             selected_cfile: None,
@@ -242,6 +238,22 @@ impl Maditor {
             this.open_project(path, cx);
         }
         this
+    }
+
+    fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
+        self.config.appearance = self.config.appearance.next();
+        self.config.save();
+        cx.notify();
+    }
+
+    fn resolve_dark(&self, window: &Window) -> bool {
+        match self.config.appearance {
+            Appearance::Light => false,
+            Appearance::Dark => true,
+            Appearance::System => {
+                matches!(window.appearance(), gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark)
+            }
+        }
     }
 
     fn project_name(path: &str) -> String {
@@ -267,7 +279,7 @@ impl Maditor {
         self.files.clear();
         self.file_items.clear();
         self.selected_file = None;
-        self.rows.clear();
+        self.file_diff.clear();
         self.loading_diff = false;
         self.diff_gen += 1;
         self.follow_worktree = true;
@@ -355,7 +367,7 @@ impl Maditor {
         self.files.clear();
         self.file_items.clear();
         self.selected_file = None;
-        self.rows.clear();
+        self.file_diff.clear();
         self.reset_diff_scroll();
         scroll_to_top(&self.file_scroll);
         self.error = None;
@@ -403,8 +415,7 @@ impl Maditor {
 
     fn select_file(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_file = Some(ix);
-        self.rows = build_rows(&self.files[ix].lines);
-        self.diff_min_w = content_width(&self.rows);
+        self.file_diff = DiffData::new(&self.files[ix].lines);
         self.reset_diff_scroll();
         cx.notify();
     }
@@ -524,7 +535,7 @@ impl Maditor {
                                 this.files.clear();
                                 this.file_items.clear();
                                 this.selected_file = None;
-                                this.rows.clear();
+                                this.file_diff.clear();
                                 this.follow_worktree = true;
                                 this.sync_graph_branch(cx);
                             }
@@ -609,8 +620,8 @@ impl Maditor {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .when(active, |d| d.bg(TEXT_STRONG).text_color(BG))
-                .when(!active, |d| d.border_1().border_color(BORDER).text_color(TEXT_DIM).hover(|d| d.bg(SELECTED)))
+                .when(active, |d| d.bg(TEXT_STRONG()).text_color(BG()))
+                .when(!active, |d| d.border_1().border_color(BORDER()).text_color(TEXT_DIM()).hover(|d| d.bg(SELECTED())))
                 .on_click(cx.listener(move |this, _, _, cx| this.open_project(click_path.clone(), cx)))
                 .on_mouse_down(
                     MouseButton::Right,
@@ -629,9 +640,9 @@ impl Maditor {
             .items_center()
             .gap_2()
             .pt_2()
-            .bg(CHROME)
+            .bg(CHROME())
             .border_r_1()
-            .border_color(BORDER)
+            .border_color(BORDER())
             .children(tiles)
             .child(
                 div()
@@ -642,10 +653,10 @@ impl Maditor {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .text_color(TEXT_DIM)
+                    .text_color(TEXT_DIM())
                     .border_1()
-                    .border_color(BORDER)
-                    .hover(|d| d.bg(SELECTED))
+                    .border_color(BORDER())
+                    .hover(|d| d.bg(SELECTED()))
                     .on_click(cx.listener(|this, _, _, cx| this.add_project(cx)))
                     .child("+"),
             )
@@ -677,28 +688,28 @@ impl Maditor {
                 .py_2()
                 .rounded_md()
                 .cursor_pointer()
-                .when(selected, |d| d.bg(SELECTED))
-                .hover(|d| d.bg(SELECTED))
+                .when(selected, |d| d.bg(SELECTED()))
+                .hover(|d| d.bg(SELECTED()))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     window.focus(&this.wt_focus);
                     this.select_worktree(ix, cx);
                 }))
-                .child(div().text_color(TEXT_STRONG).child(wt.name.clone()))
-                .child(div().text_xs().text_color(TEXT_DIM).child(wt.branch.clone().unwrap_or_else(|| "(detached)".into())))
+                .child(div().text_color(TEXT_STRONG()).child(wt.name.clone()))
+                .child(div().text_xs().text_color(TEXT_DIM()).child(wt.branch.clone().unwrap_or_else(|| "(detached)".into())))
                 .child(
                     div()
                         .flex()
                         .gap_2()
                         .items_center()
                         .text_xs()
-                        .text_color(TEXT_DIM)
+                        .text_color(TEXT_DIM())
                         .child(
                             div()
                                 .id(("base", ix))
                                 .px_1()
                                 .rounded_sm()
                                 .cursor_pointer()
-                                .hover(|d| d.bg(BORDER).text_color(TEXT_STRONG))
+                                .hover(|d| d.bg(BORDER()).text_color(TEXT_STRONG()))
                                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                                     cx.stop_propagation();
                                     let anchor = ev.position();
@@ -714,17 +725,17 @@ impl Maditor {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(PANEL)
+            .bg(PANEL())
             .border_r_1()
-            .border_color(BORDER)
+            .border_color(BORDER())
             .child(
                 div()
                     .px_4()
                     .py_3()
                     .border_b_1()
-                    .border_color(BORDER_SOFT)
-                    .child(div().text_color(TEXT_STRONG).child(Self::project_name(&self.repo)))
-                    .child(div().text_xs().text_color(TEXT_DIM).child("Worktrees")),
+                    .border_color(BORDER_SOFT())
+                    .child(div().text_color(TEXT_STRONG()).child(Self::project_name(&self.repo)))
+                    .child(div().text_xs().text_color(TEXT_DIM()).child("Worktrees")),
             )
             .child(
                 axis_locked(div().id("wt-list"))
@@ -750,7 +761,7 @@ impl Maditor {
             .unwrap_or_default();
         let items = self.file_items.iter().enumerate().map(|(n, item)| match item {
             FileItem::Label(text) => {
-                div().id(("label", n)).px_2().pt_3().pb_1().text_xs().text_color(TEXT_DIM).child(*text)
+                div().id(("label", n)).px_2().pt_3().pb_1().text_xs().text_color(TEXT_DIM()).child(*text)
             }
             FileItem::File(ix) => {
                 let ix = *ix;
@@ -767,17 +778,17 @@ impl Maditor {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(PANEL)
+            .bg(PANEL())
             .border_r_1()
-            .border_color(BORDER)
+            .border_color(BORDER())
             .child(
                 div()
                     .px_4()
                     .py_3()
                     .border_b_1()
-                    .border_color(BORDER_SOFT)
-                    .child(div().text_color(TEXT_STRONG).child(title))
-                    .child(div().text_xs().text_color(TEXT_DIM).child(subtitle)),
+                    .border_color(BORDER_SOFT())
+                    .child(div().text_color(TEXT_STRONG()).child(title))
+                    .child(div().text_xs().text_color(TEXT_DIM()).child(subtitle)),
             )
             .child(
                 axis_locked(div().id("file-list"))
@@ -793,7 +804,7 @@ impl Maditor {
             )
     }
 
-    fn body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn body(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         let row = || div().flex_1().min_w_0().flex();
         if self.repo.is_empty() {
             return row().child(empty("No project")).into_any_element();
@@ -805,7 +816,7 @@ impl Maditor {
                 .items_center()
                 .justify_center()
                 .gap_3()
-                .text_color(TEXT_DIM)
+                .text_color(TEXT_DIM())
                 .child(issue)
                 .child(
                     div()
@@ -814,11 +825,11 @@ impl Maditor {
                         .py_1()
                         .rounded_md()
                         .border_1()
-                        .border_color(BORDER)
+                        .border_color(BORDER())
                         .text_xs()
-                        .text_color(TEXT)
+                        .text_color(TEXT())
                         .cursor_pointer()
-                        .hover(|d| d.bg(SELECTED))
+                        .hover(|d| d.bg(SELECTED()))
                         .on_click(cx.listener(move |this, _, _, cx| this.close_project(&repo, cx)))
                         .child("Close project"),
                 )
@@ -840,25 +851,39 @@ impl Maditor {
         body = body
             .child(self.file_panel(cx))
             .child(self.resize_handle(Resize::FilePanel, cx))
-            .child(
-                axis_locked(div().id("diff-hscroll").flex_1().min_w_0().bg(BG).overflow_x_scroll())
-                    .track_scroll(&self.diff_hscroll)
-                    .child(
-                        axis_locked(uniform_list(
-                            "diff",
-                            self.rows.len(),
-                            cx.processor(|this, range: Range<usize>, _w, _cx| {
-                                range.map(|ix| render_row(&this.rows[ix])).collect::<Vec<_>>()
-                            }),
-                        ))
-                        .track_scroll(self.diff_scroll.clone())
-                        .min_w(px(self.diff_min_w))
-                        .h_full()
-                        .font_family(MONO)
-                        .text_size(px(12.)),
-                    ),
-            );
+            .child(self.diff_pane(DiffWhich::File, viewport_w - 48. - self.sizes.worktree - self.sizes.files - 11., cx));
         body.into_any_element()
+    }
+
+    /// A file's diff, responsive to the room it has: side-by-side when there is space, otherwise a
+    /// single unified column (each half of a split would be unreadably narrow). Scrolls sideways
+    /// for lines longer than the pane, vertically through a virtualized list.
+    fn diff_pane(&self, which: DiffWhich, available_width: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let (id, data, vscroll, hscroll) = match which {
+            DiffWhich::File => ("diff-hscroll", &self.file_diff, &self.diff_scroll, &self.diff_hscroll),
+            DiffWhich::Commit => ("cdiff-hscroll", &self.commit_diff, &self.cdiff_scroll, &self.cdiff_hscroll),
+        };
+        let unified = available_width < SPLIT_MIN_WIDTH;
+        axis_locked(div().id(id).flex_1().min_w_0().bg(BG()).overflow_x_scroll())
+            .track_scroll(hscroll)
+            .child(
+                axis_locked(uniform_list(
+                    id,
+                    data.len(unified),
+                    cx.processor(move |this, range: Range<usize>, _w, _cx| {
+                        let data = match which {
+                            DiffWhich::File => &this.file_diff,
+                            DiffWhich::Commit => &this.commit_diff,
+                        };
+                        range.map(|ix| data.render_row(unified, ix)).collect::<Vec<_>>()
+                    }),
+                ))
+                .track_scroll(vscroll.clone())
+                .min_w(px(data.width(unified)))
+                .h_full()
+                .font_family(MONO)
+                .text_size(px(12.)),
+            )
     }
 
     fn context_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -893,9 +918,9 @@ impl Maditor {
                         .min_w(px(170.))
                         .p_1()
                         .rounded_md()
-                        .bg(CHROME)
+                        .bg(CHROME())
                         .border_1()
-                        .border_color(BORDER)
+                        .border_color(BORDER())
                         .child(
                             div()
                                 .id("menu-item")
@@ -903,9 +928,9 @@ impl Maditor {
                                 .py_1()
                                 .rounded_md()
                                 .text_xs()
-                                .text_color(if danger { RED } else { TEXT_STRONG })
+                                .text_color(if danger { RED() } else { TEXT_STRONG() })
                                 .cursor_pointer()
-                                .hover(|d| d.bg(SELECTED))
+                                .hover(|d| d.bg(SELECTED()))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.menu = None;
                                     match &target {
@@ -963,11 +988,11 @@ impl Maditor {
                         .w(px(360.))
                         .p_4()
                         .rounded_lg()
-                        .bg(CHROME)
+                        .bg(CHROME())
                         .border_1()
-                        .border_color(BORDER)
-                        .child(div().text_size(px(13.5)).text_color(TEXT_STRONG).child("Remove worktree"))
-                        .child(div().mt_2().text_xs().text_color(TEXT_DIM).child(message))
+                        .border_color(BORDER())
+                        .child(div().text_size(px(13.5)).text_color(TEXT_STRONG()).child("Remove worktree"))
+                        .child(div().mt_2().text_xs().text_color(TEXT_DIM()).child(message))
                         .child(
                             div()
                                 .mt_4()
@@ -981,11 +1006,11 @@ impl Maditor {
                                         .py_1()
                                         .rounded_md()
                                         .border_1()
-                                        .border_color(BORDER)
+                                        .border_color(BORDER())
                                         .text_xs()
-                                        .text_color(TEXT_STRONG)
+                                        .text_color(TEXT_STRONG())
                                         .cursor_pointer()
-                                        .hover(|d| d.bg(SELECTED))
+                                        .hover(|d| d.bg(SELECTED()))
                                         .on_click(cx.listener(move |this, _, window, cx| close(this, window, cx)))
                                         .child("Cancel"),
                                 )
@@ -995,9 +1020,9 @@ impl Maditor {
                                         .px_3()
                                         .py_1()
                                         .rounded_md()
-                                        .bg(RED)
+                                        .bg(RED())
                                         .text_xs()
-                                        .text_color(BG)
+                                        .text_color(BG())
                                         .cursor_pointer()
                                         .hover(|d| d.opacity(0.9))
                                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -1015,9 +1040,9 @@ impl Maditor {
 /// One changed-file row (status letter, path, +/- counts); the caller adds the click handler.
 fn file_row(id: impl Into<gpui::ElementId>, f: &FileDiff, selected: bool) -> gpui::Stateful<gpui::Div> {
     let (letter, color) = match f.status.as_str() {
-        "added" => ("A", GREEN),
-        "deleted" => ("D", RED),
-        _ => ("M", AMBER),
+        "added" => ("A", GREEN()),
+        "deleted" => ("D", RED()),
+        _ => ("M", AMBER()),
     };
     div()
         .id(id)
@@ -1028,8 +1053,8 @@ fn file_row(id: impl Into<gpui::ElementId>, f: &FileDiff, selected: bool) -> gpu
         .py_1()
         .rounded_md()
         .cursor_pointer()
-        .when(selected, |d| d.bg(SELECTED))
-        .hover(|d| d.bg(SELECTED))
+        .when(selected, |d| d.bg(SELECTED()))
+        .hover(|d| d.bg(SELECTED()))
         .child(div().w(px(12.)).flex_none().text_color(color).child(letter))
         .child(
             div()
@@ -1038,17 +1063,23 @@ fn file_row(id: impl Into<gpui::ElementId>, f: &FileDiff, selected: bool) -> gpu
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_color(TEXT)
+                .text_color(TEXT())
                 .child(f.path.clone()),
         )
-        .child(div().text_xs().text_color(ADD_FG).child(format!("+{}", f.additions)))
-        .child(div().text_xs().text_color(DEL_FG).child(format!("-{}", f.deletions)))
+        .child(div().text_xs().text_color(ADD_FG()).child(format!("+{}", f.additions)))
+        .child(div().text_xs().text_color(DEL_FG()).child(format!("-{}", f.deletions)))
 }
 
 /// gpui reinterprets a wheel's *other* axis as movement along an element's own axis (vertical
 /// input scrolls a horizontal-only container, horizontal input a vertical-only one), and nested
 /// scrollers all receive every event. Left alone, a horizontal swipe over a list also drifted it
 /// vertically. Locking each scroller to its axis keeps the two directions independent.
+#[derive(Clone, Copy)]
+enum DiffWhich {
+    File,
+    Commit,
+}
+
 fn axis_locked<T: Styled>(mut el: T) -> T {
     el.style().restrict_scroll_to_axis = Some(true);
     el
@@ -1070,7 +1101,7 @@ fn selected_path_matches(selected: &Option<usize>, worktrees: &[WorktreeInfo], p
 }
 
 fn empty(message: impl Into<SharedString>) -> impl IntoElement {
-    div().flex_1().flex().items_center().justify_center().text_color(TEXT_DIM).child(message.into())
+    div().flex_1().flex().items_center().justify_center().text_color(TEXT_DIM()).child(message.into())
 }
 
 impl Render for Maditor {
@@ -1084,7 +1115,9 @@ impl Render for Maditor {
             breadcrumb = "maditor".into();
         }
 
+        crate::theme::set_dark(self.resolve_dark(window));
         let repo_ok = !self.repo.is_empty() && self.issue.is_none();
+        let viewport_w = f32::from(window.viewport_size().width);
         div()
             .relative()
             .size_full()
@@ -1093,8 +1126,8 @@ impl Render for Maditor {
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| this.on_root_mouse_move(ev, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.dragging = None))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.dragging = None))
-            .bg(BG)
-            .text_color(TEXT)
+            .bg(BG())
+            .text_color(TEXT())
             .text_size(px(13.))
             .child(
                 div()
@@ -1104,16 +1137,30 @@ impl Render for Maditor {
                     .items_center()
                     .gap_3()
                     .px_4()
-                    .bg(CHROME)
+                    .bg(CHROME())
                     .border_b_1()
-                    .border_color(BORDER)
+                    .border_color(BORDER())
                     .font_family(MONO)
-                    .text_color(TEXT_DIM)
+                    .text_color(TEXT_DIM())
                     .child(breadcrumb)
-                    .when_some(self.error.clone(), |d, e| d.child(div().text_color(RED).text_xs().child(e))),
+                    .when_some(self.error.clone(), |d, e| d.child(div().text_color(RED()).text_xs().child(e)))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("appearance")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(TEXT_DIM())
+                            .hover(|d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
+                            .on_click(cx.listener(|this, _, _, cx| this.cycle_appearance(cx)))
+                            .child(self.config.appearance.label()),
+                    ),
             )
-            .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.body(cx)))
-            .when(repo_ok && self.git_open, |d| d.child(self.git_panel(cx)))
+            .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.body(viewport_w, cx)))
+            .when(repo_ok && self.git_open, |d| d.child(self.git_panel(viewport_w, cx)))
             .when(repo_ok, |d| d.child(self.bottom_bar(cx)))
             .children(self.context_menu(cx))
             .children(self.confirm_modal(cx))
@@ -1182,7 +1229,7 @@ mod tests {
             assert!(!m.loading_diff);
             assert_eq!(m.files.len(), 2);
             assert_eq!(m.selected_file, Some(0));
-            assert!(!m.rows.is_empty());
+            assert!(!m.file_diff.is_empty());
         });
     }
 
@@ -1313,7 +1360,7 @@ mod tests {
             assert_eq!(m.selected_oid.as_deref(), Some(m.commits[0].oid.as_str()));
             assert_eq!(m.commit_files.len(), 2, "the tip commit edits a.txt and b.txt");
             assert_eq!(m.selected_cfile, Some(0));
-            assert!(!m.commit_rows.is_empty());
+            assert!(!m.commit_diff.is_empty());
         });
 
         view.update(cx, |m, cx| m.move_commit(1, cx));
@@ -1379,7 +1426,7 @@ mod tests {
         cx.run_until_parked();
         view.read_with(cx, |m, _| {
             assert_eq!(m.selected_wt, None);
-            assert!(m.files.is_empty() && m.rows.is_empty());
+            assert!(m.files.is_empty() && m.file_diff.is_empty());
             assert_eq!(m.graph_branch, "main", "the graph falls back to the default branch");
         });
     }
@@ -1506,7 +1553,7 @@ mod tests {
         let offsets = |cx: &mut gpui::VisualTestContext| {
             view.read_with(cx, |m, _| (m.diff_hscroll.offset(), m.diff_scroll.0.borrow().base_handle.offset()))
         };
-        assert!(view.read_with(cx, |m, _| m.diff_min_w) > 1400., "content is wider than the pane");
+        assert!(view.read_with(cx, |m, _| m.file_diff.width(false)) > 1400., "content is wider than the pane");
 
         wheel(cx, over_diff, -300., 0.);
         let (side, list) = offsets(cx);
@@ -1528,6 +1575,50 @@ mod tests {
         cx.run_until_parked();
         let (side, list) = offsets(cx);
         assert_eq!((side.x, list.y), (px(0.), px(0.)), "reset for the new file");
+    }
+
+    #[gpui::test]
+    fn appearance_cycles_persists_and_resolves_light_or_dark(cx: &mut TestAppContext) {
+        let root = std::env::temp_dir().join("maditor-native-test-appearance");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(None, config, cx));
+        // (The palette itself is a process-wide switch that parallel tests also flip on render,
+        // so assert on what this view resolves rather than on the global.)
+        let resolves_dark = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |m, window, _| m.resolve_dark(window));
+
+        assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::System);
+        view.update(cx, |m, cx| m.cycle_appearance(cx));
+        assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::Light);
+        assert!(!resolves_dark(cx), "Light forces light regardless of the OS");
+        view.update(cx, |m, cx| m.cycle_appearance(cx));
+        assert!(resolves_dark(cx), "Dark forces dark regardless of the OS");
+        view.update(cx, |m, cx| m.cycle_appearance(cx));
+        assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::System);
+
+        // The choice was written to disk.
+        view.update(cx, |m, cx| m.cycle_appearance(cx));
+        assert_eq!(config_in(&root).appearance, Appearance::Light);
+    }
+
+    #[gpui::test]
+    fn narrow_panes_switch_the_diff_to_unified(cx: &mut TestAppContext) {
+        // The threshold is what decides the layout; the pane math feeds it the available width.
+        assert!(crate::diff_view::SPLIT_MIN_WIDTH > 500.);
+        let (root, repo) = fixture("responsive");
+        let path = repo.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
+        cx.run_until_parked();
+        let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
+        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
+        cx.run_until_parked();
+        view.read_with(cx, |m, _| {
+            // a.txt changes one line: 2 split rows (equal + replaced) vs 3 unified lines.
+            let (split, unified) = (m.file_diff.len(false), m.file_diff.len(true));
+            assert!(unified > split, "unified={unified} split={split}");
+        });
     }
 
     #[gpui::test]

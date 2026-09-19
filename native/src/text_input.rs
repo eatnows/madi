@@ -476,7 +476,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), TEXT_DIM.into())
+            (input.placeholder.clone(), TEXT_DIM().into())
         } else {
             (content, style.color)
         };
@@ -530,7 +530,7 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    TEXT_STRONG,
+                    TEXT_STRONG(),
                 )),
             )
         } else {
@@ -546,7 +546,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    Rgba { a: 0.28, ..AMBER },
+                    Rgba { a: 0.28, ..AMBER() },
                 )),
                 None,
             )
