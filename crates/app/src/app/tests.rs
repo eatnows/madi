@@ -1,6 +1,7 @@
 //! Harness tests for the app: real repos, real keystrokes, wheel events.
 use super::*;
-use gpui::TestAppContext;
+use gpui::{Entity, TestAppContext};
+use maditor_git::branches::BranchRow;
 
 /// The graph list is at most this much wider than its pane (820 min width vs the 460 pane).
 const GRAPH_MIN_WIDTH_FOR_TEST: f32 = 820.0 - 400.0;
