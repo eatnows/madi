@@ -1,11 +1,14 @@
 //! Diff rows for both layouts: side-by-side (deleted/inserted lines paired into old|new columns)
 //! and unified (one column, for narrow panes), plus how a row is drawn.
-use std::ops::Range;
+use std::{ops::Range, rc::Rc};
 
-use gpui::{div, prelude::*, px, AnyElement, HighlightStyle, IntoElement, Rgba, SharedString, StyledText};
+use gpui::{
+    div, prelude::*, px, uniform_list, AnyElement, ElementId, HighlightStyle, IntoElement, Rgba,
+    ScrollHandle, SharedString, StyledText, UniformListScrollHandle,
+};
 use maditor_core::diff::DiffLine;
 
-use crate::theme::*;
+use crate::{scroll::axis_locked, theme::*};
 
 pub const ROW_H: f32 = 20.0;
 /// Below this pane width each half of a side-by-side diff would be too cramped to read.
@@ -156,10 +159,6 @@ impl DiffData {
         }
     }
 
-    pub fn clear(&mut self) {
-        *self = Self::default();
-    }
-
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.split.is_empty()
@@ -180,6 +179,33 @@ impl DiffData {
             render_split_row(&self.split[ix]).into_any_element()
         }
     }
+}
+
+/// A file's diff, responsive to the room it has: side-by-side when there is space, otherwise a
+/// single unified column (each half of a split would be unreadably narrow). Scrolls sideways for
+/// lines longer than the pane, vertically through a virtualized list.
+pub fn diff_view(
+    id: impl Into<ElementId>,
+    data: Rc<DiffData>,
+    vscroll: &UniformListScrollHandle,
+    hscroll: &ScrollHandle,
+    available_width: f32,
+) -> impl IntoElement {
+    let id: ElementId = id.into();
+    let unified = available_width < SPLIT_MIN_WIDTH;
+    let (count, width) = (data.len(unified), data.width(unified));
+    axis_locked(div().id(id.clone()).flex_1().min_w_0().bg(BG()).overflow_x_scroll())
+        .track_scroll(hscroll)
+        .child(
+            axis_locked(uniform_list(id, count, move |range: Range<usize>, _, _| {
+                range.map(|ix| data.render_row(unified, ix)).collect::<Vec<_>>()
+            }))
+            .track_scroll(vscroll.clone())
+            .min_w(px(width))
+            .h_full()
+            .font_family(MONO)
+            .text_size(px(12.)),
+        )
 }
 
 fn colors_for(tag: Option<&str>) -> (Option<Rgba>, Rgba, Rgba, Rgba) {

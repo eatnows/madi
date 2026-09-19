@@ -9,12 +9,10 @@ use gpui::{
 };
 use maditor_core::{diff, git_log};
 
-use super::{
-    axis_locked, list_scroll_to_top, DiffWhich, scroll_to_top, Maditor, PickerTarget, Resize, SelectNext,
-    SelectPrev, GRAPH_PAGE,
-};
+use super::{Maditor, PickerTarget, Resize, SelectNext, SelectPrev, GRAPH_PAGE};
+use crate::scroll::{axis_locked, list_scroll_to_top, scroll_to_top};
 use crate::{
-    diff_view::DiffData,
+    diff_view::{diff_view, DiffData},
     graph::{self, GraphRow},
     theme::*,
 };
@@ -136,7 +134,7 @@ impl Maditor {
         self.commit_gen += 1;
         self.selected_oid = None;
         self.commit_files.clear();
-        self.commit_diff.clear();
+        self.commit_diff = Default::default();
         self.selected_cfile = None;
         scroll_to_top(&self.cfile_scroll);
         self.reset_cdiff_scroll();
@@ -185,7 +183,7 @@ impl Maditor {
 
     fn select_cfile(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_cfile = Some(ix);
-        self.commit_diff = DiffData::new(&self.commit_files[ix].lines);
+        self.commit_diff = std::rc::Rc::new(DiffData::new(&self.commit_files[ix].lines));
         self.reset_cdiff_scroll();
         cx.notify();
     }
@@ -227,13 +225,11 @@ impl Maditor {
         let delta = current - last;
         let s = &mut self.sizes;
         match kind {
-            Resize::WorktreePanel => s.worktree = (s.worktree + delta).clamp(180., 420.),
-            Resize::FilePanel => s.files = (s.files + delta).clamp(180., 480.),
+            Resize::Sidebar => s.sidebar = (s.sidebar + delta).clamp(200., 520.),
             // The handle sits on the panel's top edge, so dragging up (negative) grows it.
             Resize::GitHeight => s.git_height = (s.git_height - delta).clamp(160., 640.),
             Resize::GraphPane => s.graph_pane = (s.graph_pane + delta).clamp(300., 800.),
             Resize::CommitFiles => s.commit_files = (s.commit_files + delta).clamp(160., 400.),
-            Resize::Tree => s.tree = (s.tree + delta).clamp(160., 480.),
         }
         self.dragging = Some((kind, current));
         cx.notify();
@@ -243,12 +239,10 @@ impl Maditor {
 
     pub(super) fn resize_handle(&self, kind: Resize, cx: &mut Context<Self>) -> impl IntoElement {
         let id = match kind {
-            Resize::WorktreePanel => "rz-wt",
-            Resize::FilePanel => "rz-file",
+            Resize::Sidebar => "rz-sidebar",
             Resize::GitHeight => "rz-git",
             Resize::GraphPane => "rz-graph",
             Resize::CommitFiles => "rz-cfiles",
-            Resize::Tree => "rz-tree",
         };
         let base = div()
             .id(id)
@@ -272,33 +266,6 @@ impl Maditor {
         self.drag_to(ev.position, cx);
     }
 
-    pub(super) fn bottom_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex_none()
-            .h(px(34.))
-            .flex()
-            .items_center()
-            .px_3()
-            .bg(CHROME())
-            .border_t_1()
-            .border_color(BORDER())
-            .child(
-                div()
-                    .id("graph-tab")
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .when(self.git_open, |d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
-                    .when(!self.git_open, |d| d.text_color(TEXT_DIM()).hover(|d| d.bg(PANEL())))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.git_open = !this.git_open;
-                        cx.notify();
-                    }))
-                    .child("Graph"),
-            )
-    }
 
     fn lane_element(&self, ix: usize, row: &GraphRow, cx: &mut Context<Self>) -> impl IntoElement {
         let width = (row.max_lane + 1) as f32 * LANE_W + LANE_X0;
@@ -641,10 +608,12 @@ impl Maditor {
                         .children(items),
                 )
                 .child(self.resize_handle(Resize::CommitFiles, cx))
-                .child(self.diff_pane(
-                    DiffWhich::Commit,
+                .child(diff_view(
+                    "cdiff",
+                    self.commit_diff.clone(),
+                    &self.cdiff_scroll,
+                    &self.cdiff_hscroll,
                     viewport_w - self.sizes.graph_pane - self.sizes.commit_files - 11.,
-                    cx,
                 ))
                 .into_any_element()
         };

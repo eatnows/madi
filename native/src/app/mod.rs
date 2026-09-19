@@ -1,14 +1,16 @@
-mod edit_mode;
+mod workspace;
+mod chrome;
 mod git_panel;
 mod picker_view;
+mod sidebar;
 
 use std::{
     collections::{HashMap, HashSet},
-    ops::Range,
+    rc::Rc,
 };
 
 use gpui::{
-    actions, div, prelude::*, px, uniform_list, App, ClickEvent, Context, Entity, FocusHandle,
+    actions, div, prelude::*, px, App, Context, Entity, FocusHandle,
     Focusable, IntoElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
     PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Subscription,
     UniformListScrollHandle, Window,
@@ -21,9 +23,10 @@ use maditor_core::{
 
 use crate::{
     config::{Appearance, Config},
-    diff_view::{DiffData, SPLIT_MIN_WIDTH},
+    diff_view::DiffData,
     graph::GraphRow,
     picker,
+    scroll::{axis_locked, scroll_to_top},
     text_input::TextInput,
     theme::*,
 };
@@ -75,10 +78,11 @@ struct Confirm {
     action: ConfirmAction,
 }
 
+/// What the sidebar shows: the project's files, or its git worktrees and their changes.
 #[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    Compare,
-    Edit,
+enum SidebarView {
+    Files,
+    Worktrees,
 }
 
 struct BranchPickerState {
@@ -95,12 +99,10 @@ const GRAPH_PAGE: usize = 100;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Resize {
-    WorktreePanel,
-    FilePanel,
+    Sidebar,
     GitHeight,
     GraphPane,
     CommitFiles,
-    Tree,
 }
 
 impl Resize {
@@ -110,12 +112,10 @@ impl Resize {
 }
 
 struct Sizes {
-    worktree: f32,
-    files: f32,
+    sidebar: f32,
     git_height: f32,
     graph_pane: f32,
     commit_files: f32,
-    tree: f32,
 }
 
 enum FileItem {
@@ -161,18 +161,15 @@ pub struct Maditor {
     files: Vec<FileDiff>,
     file_items: Vec<FileItem>,
     selected_file: Option<usize>,
-    file_diff: DiffData,
-    diff_scroll: UniformListScrollHandle,
-    diff_hscroll: ScrollHandle,
     loading_diff: bool,
     /// Bumped per request so a slow, superseded scan/diff can't overwrite a newer one.
     scan_gen: u64,
     diff_gen: u64,
     menu: Option<(Point<Pixels>, MenuTarget)>,
     confirm: Option<Confirm>,
-    mode: Mode,
-    workspaces: HashMap<String, edit_mode::Workspace>,
-    tree_rows: Vec<edit_mode::TreeRow>,
+    sidebar_view: SidebarView,
+    workspaces: HashMap<String, workspace::Workspace>,
+    tree_rows: Vec<workspace::TreeRow>,
     tree_focus: FocusHandle,
     tree_scroll: ScrollHandle,
     modal_focus: FocusHandle,
@@ -194,7 +191,7 @@ pub struct Maditor {
     selected_oid: Option<String>,
     detail_collapsed: bool,
     commit_files: Vec<FileDiff>,
-    commit_diff: DiffData,
+    commit_diff: Rc<DiffData>,
     cdiff_scroll: UniformListScrollHandle,
     cdiff_hscroll: ScrollHandle,
     selected_cfile: Option<usize>,
@@ -222,15 +219,12 @@ impl Maditor {
             files: Vec::new(),
             file_items: Vec::new(),
             selected_file: None,
-            file_diff: DiffData::default(),
-            diff_scroll: UniformListScrollHandle::new(),
-            diff_hscroll: ScrollHandle::new(),
             loading_diff: false,
             scan_gen: 0,
             diff_gen: 0,
             menu: None,
             confirm: None,
-            mode: Mode::Compare,
+            sidebar_view: SidebarView::Files,
             workspaces: HashMap::new(),
             tree_rows: Vec::new(),
             tree_focus: cx.focus_handle(),
@@ -240,7 +234,7 @@ impl Maditor {
             file_focus: cx.focus_handle(),
             wt_scroll: ScrollHandle::new(),
             file_scroll: ScrollHandle::new(),
-            sizes: Sizes { worktree: 248., files: 260., git_height: 280., graph_pane: 460., commit_files: 220., tree: 260. },
+            sizes: Sizes { sidebar: 280., git_height: 280., graph_pane: 460., commit_files: 220. },
             dragging: None,
             git_open: false,
             graph_branch: String::new(),
@@ -253,7 +247,7 @@ impl Maditor {
             selected_oid: None,
             detail_collapsed: false,
             commit_files: Vec::new(),
-            commit_diff: DiffData::default(),
+            commit_diff: Rc::default(),
             cdiff_scroll: UniformListScrollHandle::new(),
             cdiff_hscroll: ScrollHandle::new(),
             selected_cfile: None,
@@ -269,36 +263,6 @@ impl Maditor {
             this.open_project(path, cx);
         }
         this
-    }
-
-    /// The "Compare | Edit" switch: the app's two top-level modes.
-    fn mode_switch(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let seg = |id: &'static str, label: &'static str, mode: Mode, active: bool, cx: &mut Context<Self>| {
-            div()
-                .id(id)
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .text_xs()
-                .cursor_pointer()
-                .when(active, |d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
-                .when(!active, |d| d.text_color(TEXT_DIM()).hover(|d| d.text_color(TEXT_STRONG())))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.mode = mode;
-                    cx.notify();
-                }))
-                .child(label)
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .p_1()
-            .rounded_lg()
-            .border_1()
-            .border_color(BORDER())
-            .child(seg("mode-compare", "Compare", Mode::Compare, self.mode == Mode::Compare, cx))
-            .child(seg("mode-edit", "Edit", Mode::Edit, self.mode == Mode::Edit, cx))
     }
 
     fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
@@ -340,7 +304,6 @@ impl Maditor {
         self.files.clear();
         self.file_items.clear();
         self.selected_file = None;
-        self.file_diff.clear();
         self.loading_diff = false;
         self.diff_gen += 1;
         self.follow_worktree = true;
@@ -366,10 +329,8 @@ impl Maditor {
                 match result {
                     Ok(ScanOutcome::Issue(issue)) => {
                         this.issue = Some(issue);
-                        // Without git there's nothing to compare, but the files can still be edited.
-                        if issue == "Not a git repository" {
-                            this.mode = Mode::Edit;
-                        }
+                        // Without git there are no worktrees to show, but the files can still be edited.
+                        this.sidebar_view = SidebarView::Files;
                     }
                     Ok(ScanOutcome::Loaded { worktrees, pins, branches }) => {
                         this.worktrees = worktrees;
@@ -452,8 +413,6 @@ impl Maditor {
         self.files.clear();
         self.file_items.clear();
         self.selected_file = None;
-        self.file_diff.clear();
-        self.reset_diff_scroll();
         scroll_to_top(&self.file_scroll);
         self.error = None;
         self.loading_diff = true;
@@ -485,9 +444,8 @@ impl Maditor {
                             }
                             this.file_items.push(FileItem::File(i));
                         }
-                        if !this.files.is_empty() {
-                            this.select_file(0, cx);
-                        }
+                        // The changes are listed, but no tab opens until one is picked: selecting a
+                        // worktree shouldn't take over what the editor is showing.
                     }
                     Err(e) => this.error = Some(e),
                 }
@@ -498,16 +456,11 @@ impl Maditor {
         .detach();
     }
 
-    fn select_file(&mut self, ix: usize, cx: &mut Context<Self>) {
+    /// Picks a changed file of the selected worktree and opens its diff as a tab (a preview tab
+    /// unless `preview` is false, so browsing with the arrow keys doesn't pile up tabs).
+    fn select_file(&mut self, ix: usize, preview: bool, cx: &mut Context<Self>) {
         self.selected_file = Some(ix);
-        self.file_diff = DiffData::new(&self.files[ix].lines);
-        self.reset_diff_scroll();
-        cx.notify();
-    }
-
-    fn reset_diff_scroll(&self) {
-        list_scroll_to_top(&self.diff_scroll);
-        scroll_to_top(&self.diff_hscroll);
+        self.open_diff(ix, preview, cx);
     }
 
     fn open_picker(&mut self, target: PickerTarget, anchor: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -620,7 +573,6 @@ impl Maditor {
                                 this.files.clear();
                                 this.file_items.clear();
                                 this.selected_file = None;
-                                this.file_diff.clear();
                                 this.follow_worktree = true;
                                 this.sync_graph_branch(cx);
                             }
@@ -687,7 +639,7 @@ impl Maditor {
             if let Some(pos) = self.file_items.iter().position(|it| matches!(it, FileItem::File(i) if *i == next)) {
                 self.file_scroll.scroll_to_item(pos);
             }
-            self.select_file(next, cx);
+            self.select_file(next, true, cx);
         }
     }
 
@@ -744,233 +696,6 @@ impl Maditor {
                     .hover(|d| d.bg(SELECTED()))
                     .on_click(cx.listener(|this, _, _, cx| this.add_project(cx)))
                     .child("+"),
-            )
-    }
-
-    fn worktree_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.worktrees.iter().enumerate().map(|(ix, wt)| {
-            let selected = self.selected_wt == Some(ix);
-            let status = match (wt.ahead, wt.behind) {
-                (Some(0), Some(0)) => "up to date".to_string(),
-                (Some(a), Some(b)) => format!("↑{a} ↓{b}"),
-                _ => String::new(),
-            };
-            let base = self.pins.get(&wt.path).cloned().unwrap_or_default();
-            let wt_path = wt.path.clone();
-            let is_main = wt.is_main;
-            div()
-                .id(("wt", ix))
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                        if !is_main {
-                            this.menu = Some((ev.position, MenuTarget::Worktree(ix)));
-                            cx.notify();
-                        }
-                    }),
-                )
-                .px_2()
-                .py_2()
-                .rounded_md()
-                .cursor_pointer()
-                .when(selected, |d| d.bg(SELECTED()))
-                .hover(|d| d.bg(SELECTED()))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    window.focus(&this.wt_focus);
-                    this.select_worktree(ix, cx);
-                }))
-                .child(div().text_color(TEXT_STRONG()).child(wt.name.clone()))
-                .child(div().text_xs().text_color(TEXT_DIM()).child(wt.branch.clone().unwrap_or_else(|| "(detached)".into())))
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .items_center()
-                        .text_xs()
-                        .text_color(TEXT_DIM())
-                        .child(
-                            div()
-                                .id(("base", ix))
-                                .px_1()
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .hover(|d| d.bg(BORDER()).text_color(TEXT_STRONG()))
-                                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    let anchor = ev.position();
-                                    this.open_picker(PickerTarget::WorktreeBase(wt_path.clone()), anchor, window, cx);
-                                }))
-                                .child(format!("base: {base} ⌄")),
-                        )
-                        .child(status),
-                )
-        });
-        div()
-            .w(px(self.sizes.worktree))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .bg(PANEL())
-            .border_r_1()
-            .border_color(BORDER())
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(BORDER_SOFT())
-                    .child(div().text_color(TEXT_STRONG()).child(Self::project_name(&self.repo)))
-                    .child(div().text_xs().text_color(TEXT_DIM()).child("Worktrees")),
-            )
-            .child(
-                axis_locked(div().id("wt-list"))
-                    .key_context("NavList")
-                    .track_focus(&self.wt_focus)
-                    .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_worktree(-1, cx)))
-                    .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_worktree(1, cx)))
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.wt_scroll)
-                    .p_2()
-                    .children(rows),
-            )
-    }
-
-    fn file_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (title, subtitle) = self
-            .selected_wt
-            .map(|ix| {
-                let wt = &self.worktrees[ix];
-                (wt.name.clone(), format!("vs {}", self.pins.get(&wt.path).cloned().unwrap_or_default()))
-            })
-            .unwrap_or_default();
-        let items = self.file_items.iter().enumerate().map(|(n, item)| match item {
-            FileItem::Label(text) => {
-                div().id(("label", n)).px_2().pt_3().pb_1().text_xs().text_color(TEXT_DIM()).child(*text)
-            }
-            FileItem::File(ix) => {
-                let ix = *ix;
-                file_row(("file", n), &self.files[ix], self.selected_file == Some(ix)).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        window.focus(&this.file_focus);
-                        this.select_file(ix, cx);
-                    },
-                ))
-            }
-        });
-        div()
-            .w(px(self.sizes.files))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .bg(PANEL())
-            .border_r_1()
-            .border_color(BORDER())
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(BORDER_SOFT())
-                    .child(div().text_color(TEXT_STRONG()).child(title))
-                    .child(div().text_xs().text_color(TEXT_DIM()).child(subtitle)),
-            )
-            .child(
-                axis_locked(div().id("file-list"))
-                    .key_context("NavList")
-                    .track_focus(&self.file_focus)
-                    .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_file(-1, cx)))
-                    .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_file(1, cx)))
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.file_scroll)
-                    .p_2()
-                    .children(items),
-            )
-    }
-
-    fn body(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let row = || div().flex_1().min_w_0().flex();
-        if self.mode == Mode::Edit && !self.repo.is_empty() && self.issue != Some("Folder not found") {
-            return self.edit_body(cx);
-        }
-        if self.repo.is_empty() {
-            return row().child(empty("No project")).into_any_element();
-        }
-        if let Some(issue) = self.issue {
-            let repo = self.repo.clone();
-            return row()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .text_color(TEXT_DIM())
-                .child(issue)
-                .child(
-                    div()
-                        .id("close-broken")
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(BORDER())
-                        .text_xs()
-                        .text_color(TEXT())
-                        .cursor_pointer()
-                        .hover(|d| d.bg(SELECTED()))
-                        .on_click(cx.listener(move |this, _, _, cx| this.request_close_project(&repo, cx)))
-                        .child("Close project"),
-                )
-                .into_any_element();
-        }
-        if self.worktrees.is_empty() && self.error.is_none() {
-            return row().child(empty("No data")).into_any_element();
-        }
-        let mut body = row().child(self.worktree_panel(cx)).child(self.resize_handle(Resize::WorktreePanel, cx));
-        if self.selected_wt.is_none() {
-            return body.child(empty("No data")).into_any_element();
-        }
-        if self.loading_diff {
-            return body.child(empty("Loading…")).into_any_element();
-        }
-        if self.files.is_empty() && self.error.is_none() {
-            return body.child(empty("No changes")).into_any_element();
-        }
-        body = body
-            .child(self.file_panel(cx))
-            .child(self.resize_handle(Resize::FilePanel, cx))
-            .child(self.diff_pane(DiffWhich::File, viewport_w - 48. - self.sizes.worktree - self.sizes.files - 11., cx));
-        body.into_any_element()
-    }
-
-    /// A file's diff, responsive to the room it has: side-by-side when there is space, otherwise a
-    /// single unified column (each half of a split would be unreadably narrow). Scrolls sideways
-    /// for lines longer than the pane, vertically through a virtualized list.
-    fn diff_pane(&self, which: DiffWhich, available_width: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let (id, data, vscroll, hscroll) = match which {
-            DiffWhich::File => ("diff-hscroll", &self.file_diff, &self.diff_scroll, &self.diff_hscroll),
-            DiffWhich::Commit => ("cdiff-hscroll", &self.commit_diff, &self.cdiff_scroll, &self.cdiff_hscroll),
-        };
-        let unified = available_width < SPLIT_MIN_WIDTH;
-        axis_locked(div().id(id).flex_1().min_w_0().bg(BG()).overflow_x_scroll())
-            .track_scroll(hscroll)
-            .child(
-                axis_locked(uniform_list(
-                    id,
-                    data.len(unified),
-                    cx.processor(move |this, range: Range<usize>, _w, _cx| {
-                        let data = match which {
-                            DiffWhich::File => &this.file_diff,
-                            DiffWhich::Commit => &this.commit_diff,
-                        };
-                        range.map(|ix| data.render_row(unified, ix)).collect::<Vec<_>>()
-                    }),
-                ))
-                .track_scroll(vscroll.clone())
-                .min_w(px(data.width(unified)))
-                .h_full()
-                .font_family(MONO)
-                .text_size(px(12.)),
             )
     }
 
@@ -1166,29 +891,6 @@ fn file_row(id: impl Into<gpui::ElementId>, f: &FileDiff, selected: bool) -> gpu
         .child(div().text_xs().text_color(DEL_FG()).child(format!("-{}", f.deletions)))
 }
 
-/// gpui reinterprets a wheel's *other* axis as movement along an element's own axis (vertical
-/// input scrolls a horizontal-only container, horizontal input a vertical-only one), and nested
-/// scrollers all receive every event. Left alone, a horizontal swipe over a list also drifted it
-/// vertically. Locking each scroller to its axis keeps the two directions independent.
-#[derive(Clone, Copy)]
-enum DiffWhich {
-    File,
-    Commit,
-}
-
-fn axis_locked<T: Styled>(mut el: T) -> T {
-    el.style().restrict_scroll_to_axis = Some(true);
-    el
-}
-
-fn scroll_to_top(handle: &ScrollHandle) {
-    handle.set_offset(Point::default());
-}
-
-fn list_scroll_to_top(handle: &UniformListScrollHandle) {
-    handle.0.borrow().base_handle.set_offset(Point::default());
-}
-
 fn selected_path_matches(selected: &Option<usize>, worktrees: &[WorktreeInfo], path: Option<&str>) -> bool {
     match (selected, path) {
         (Some(i), Some(path)) => worktrees[*i].path == path,
@@ -1200,17 +902,51 @@ fn empty(message: impl Into<SharedString>) -> impl IntoElement {
     div().flex_1().flex().items_center().justify_center().text_color(TEXT_DIM()).child(message.into())
 }
 
+impl Maditor {
+    /// Everything right of the project rail: the sidebar and the editor area.
+    fn main_area(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let row = || div().flex_1().min_w_0().flex();
+        if self.repo.is_empty() {
+            return row().child(empty("No project")).into_any_element();
+        }
+        if self.issue == Some("Folder not found") {
+            let repo = self.repo.clone();
+            return row()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .text_color(TEXT_DIM())
+                .child("Folder not found")
+                .child(
+                    div()
+                        .id("close-broken")
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(BORDER())
+                        .text_xs()
+                        .text_color(TEXT())
+                        .cursor_pointer()
+                        .hover(|d| d.bg(SELECTED()))
+                        .on_click(cx.listener(move |this, _, _, cx| this.request_close_project(&repo, cx)))
+                        .child("Close project"),
+                )
+                .into_any_element();
+        }
+        // Room for a diff tab: the window minus the rail, the sidebar and its drag handle.
+        let editor_width = viewport_w - 48. - self.sizes.sidebar - 5.;
+        row()
+            .child(self.sidebar(cx))
+            .child(self.resize_handle(Resize::Sidebar, cx))
+            .child(self.editor_area(editor_width, cx))
+            .into_any_element()
+    }
+}
+
 impl Render for Maditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut breadcrumb = format!("maditor / {}", Self::project_name(&self.repo));
-        if let Some(ix) = self.selected_wt {
-            let wt = &self.worktrees[ix];
-            breadcrumb.push_str(&format!(" / {}", wt.branch.clone().unwrap_or_else(|| wt.name.clone())));
-        }
-        if self.repo.is_empty() {
-            breadcrumb = "maditor".into();
-        }
-
         crate::theme::set_dark(self.resolve_dark(window));
         let repo_ok = !self.repo.is_empty() && self.issue.is_none();
         let viewport_w = f32::from(window.viewport_size().width);
@@ -1225,40 +961,10 @@ impl Render for Maditor {
             .bg(BG())
             .text_color(TEXT())
             .text_size(px(13.))
-            .child(
-                div()
-                    .h(px(40.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .bg(CHROME())
-                    .border_b_1()
-                    .border_color(BORDER())
-                    .font_family(MONO)
-                    .text_color(TEXT_DIM())
-                    .child(breadcrumb)
-                    .when(!self.repo.is_empty(), |d| d.child(self.mode_switch(cx)))
-                    .when_some(self.error.clone(), |d, e| d.child(div().text_color(RED()).text_xs().child(e)))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("appearance")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_xs()
-                            .cursor_pointer()
-                            .text_color(TEXT_DIM())
-                            .hover(|d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
-                            .on_click(cx.listener(|this, _, _, cx| this.cycle_appearance(cx)))
-                            .child(self.config.appearance.label()),
-                    ),
-            )
-            .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.body(viewport_w, cx)))
-            .when(repo_ok && self.mode == Mode::Compare && self.git_open, |d| d.child(self.git_panel(viewport_w, cx)))
-            .when(repo_ok && self.mode == Mode::Compare, |d| d.child(self.bottom_bar(cx)))
+            .child(self.topbar(cx))
+            .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.main_area(viewport_w, cx)))
+            .when(repo_ok && self.git_open, |d| d.child(self.git_panel(viewport_w, cx)))
+            .child(self.status_bar(cx))
             .children(self.context_menu(cx))
             .children(self.confirm_modal(cx))
             .children(self.picker_overlay(window, cx))
@@ -1266,594 +972,4 @@ impl Render for Maditor {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::TestAppContext;
-
-    /// The graph list is at most this much wider than its pane (820 min width vs the 460 pane).
-    const GRAPH_MIN_WIDTH_FOR_TEST: f32 = 820.0 - 400.0;
-    use std::{path::Path, process::Command};
-
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    }
-
-    /// A repo with `main` plus a linked worktree `wt` (branch feature) that edits one file.
-    fn fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!("maditor-native-test-{name}"));
-        let _ = std::fs::remove_dir_all(&root);
-        let repo = root.join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "-q", "-b", "main"]);
-        git(&repo, &["config", "user.email", "t@t"]);
-        git(&repo, &["config", "user.name", "T"]);
-        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
-        std::fs::write(repo.join("b.txt"), "x\n").unwrap();
-        git(&repo, &["add", "-A"]);
-        git(&repo, &["commit", "-q", "-m", "init"]);
-        let wt = root.join("wt");
-        git(&repo, &["worktree", "add", "-q", "-b", "feature", wt.to_str().unwrap()]);
-        std::fs::write(wt.join("a.txt"), "one\nTWO\n").unwrap();
-        std::fs::write(wt.join("b.txt"), "y\n").unwrap();
-        git(&wt, &["commit", "-qam", "edit"]);
-        (root, repo)
-    }
-
-    fn config_in(root: &Path) -> Config {
-        Config::at(Some(root.join("config.json")))
-    }
-
-    #[gpui::test]
-    fn scans_a_repo_and_loads_a_worktree_diff(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("scan");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
-        cx.run_until_parked();
-
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.worktrees.len(), 2);
-            assert!(m.pins.values().all(|b| b == "main"));
-            assert_eq!(m.config.projects, vec![path.clone()]);
-        });
-
-        let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
-        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
-        cx.run_until_parked();
-
-        view.read_with(cx, |m, _| {
-            assert!(!m.loading_diff);
-            assert_eq!(m.files.len(), 2);
-            assert_eq!(m.selected_file, Some(0));
-            assert!(!m.file_diff.is_empty());
-        });
-    }
-
-    #[gpui::test]
-    fn arrow_navigation_clamps_at_both_ends(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("nav");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-
-        view.update(cx, |m, cx| m.move_worktree(1, cx));
-        cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |m, _| m.selected_wt), Some(0));
-        view.update(cx, |m, cx| m.move_worktree(1, cx));
-        view.update(cx, |m, cx| m.move_worktree(1, cx));
-        cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |m, _| m.selected_wt), Some(1), "clamped at the last worktree");
-
-        let on_wt = view.read_with(cx, |m, _| !m.worktrees[m.selected_wt.unwrap()].is_main);
-        if !on_wt {
-            view.update(cx, |m, cx| m.move_worktree(-1, cx));
-            cx.run_until_parked();
-        }
-        view.update(cx, |m, cx| m.move_file(1, cx));
-        assert_eq!(view.read_with(cx, |m, _| m.selected_file), Some(1));
-        view.update(cx, |m, cx| m.move_file(1, cx));
-        assert_eq!(view.read_with(cx, |m, _| m.selected_file), Some(1), "clamped at the last file");
-        view.update(cx, |m, cx| m.move_file(-5, cx));
-        assert_eq!(view.read_with(cx, |m, _| m.selected_file), Some(0));
-    }
-
-    #[gpui::test]
-    fn picking_a_base_branch_pins_it_and_refreshes_ahead_behind(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("pick");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
-        cx.run_until_parked();
-
-        let (wt_ix, wt_path) = view.read_with(cx, |m, _| {
-            let ix = m.worktrees.iter().position(|w| !w.is_main).unwrap();
-            (ix, m.worktrees[ix].path.clone())
-        });
-        assert_eq!(view.read_with(cx, |m, _| (m.worktrees[wt_ix].ahead, m.worktrees[wt_ix].behind)), (Some(1), Some(0)));
-
-        view.update_in(cx, |m, window, cx| {
-            m.open_picker(PickerTarget::WorktreeBase(wt_path.clone()), Point::default(), window, cx)
-        });
-        // Rows are alphabetical: feature, main. Activate "feature" (the worktree's own branch).
-        let feature_row = view.read_with(cx, |m, cx| {
-            m.picker_rows(cx)
-                .iter()
-                .position(|r| matches!(r, picker::PickerRow::Option { full_path, .. } if full_path == "feature"))
-                .unwrap()
-        });
-        view.update_in(cx, |m, window, cx| m.picker_activate(feature_row, window, cx));
-        cx.run_until_parked();
-
-        view.read_with(cx, |m, _| {
-            assert!(m.picker.is_none(), "picker closes after a pick");
-            assert_eq!(m.pins.get(&wt_path).map(String::as_str), Some("feature"));
-            let ix = m.worktrees.iter().position(|w| w.path == wt_path).unwrap();
-            assert_eq!((m.worktrees[ix].ahead, m.worktrees[ix].behind), (Some(0), Some(0)));
-        });
-        assert_eq!(
-            config_in(&root).pins[&path][&wt_path], "feature",
-            "the pin was persisted"
-        );
-    }
-
-    #[gpui::test]
-    fn graph_follows_the_worktree_until_pinned(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("graph");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.graph_branch, "main", "with only a project selected, default to main");
-            assert_eq!(m.commits.len(), 1);
-        });
-
-        let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
-        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.graph_branch, "feature");
-            assert_eq!(m.commits.len(), 2);
-            assert!(m.follow_worktree);
-        });
-
-        // Pin the graph to main via the panel's own picker: it stops following.
-        view.update_in(cx, |m, window, cx| m.open_picker(PickerTarget::GraphBranch, Point::default(), window, cx));
-        let main_row = view.read_with(cx, |m, cx| {
-            m.picker_rows(cx)
-                .iter()
-                .position(|r| matches!(r, picker::PickerRow::Option { full_path, .. } if full_path == "main"))
-                .unwrap()
-        });
-        view.update_in(cx, |m, window, cx| m.picker_activate(main_row, window, cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| {
-            assert_eq!((m.graph_branch.as_str(), m.follow_worktree, m.commits.len()), ("main", false, 1));
-        });
-
-        // Clicking a worktree resumes following.
-        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| assert_eq!((m.graph_branch.as_str(), m.follow_worktree), ("feature", true)));
-    }
-
-    #[gpui::test]
-    fn selecting_a_commit_loads_its_files_and_reclicking_deselects(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("commit");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-        let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
-        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
-        cx.run_until_parked();
-
-        view.update(cx, |m, cx| m.select_commit(0, true, cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.selected_oid.as_deref(), Some(m.commits[0].oid.as_str()));
-            assert_eq!(m.commit_files.len(), 2, "the tip commit edits a.txt and b.txt");
-            assert_eq!(m.selected_cfile, Some(0));
-            assert!(!m.commit_diff.is_empty());
-        });
-
-        view.update(cx, |m, cx| m.move_commit(1, cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.selected_oid.as_deref(), Some(m.commits[1].oid.as_str()));
-            assert_eq!(m.commit_files.len(), 2, "the root commit adds both files");
-        });
-        view.update(cx, |m, cx| m.move_commit(1, cx));
-        view.read_with(cx, |m, _| assert_eq!(m.selected_oid.as_deref(), Some(m.commits[1].oid.as_str()), "clamped"));
-
-        view.update(cx, |m, cx| m.select_commit(1, true, cx));
-        view.read_with(cx, |m, _| assert!(m.selected_oid.is_none() && m.commit_files.is_empty()));
-    }
-
-    #[gpui::test]
-    fn removing_a_worktree_keeps_the_other_selection_and_drops_its_pin(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("remove");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
-        cx.run_until_parked();
-
-        let (main_ix, wt_path) = view.read_with(cx, |m, _| {
-            (
-                m.worktrees.iter().position(|w| w.is_main).unwrap(),
-                m.worktrees.iter().find(|w| !w.is_main).unwrap().path.clone(),
-            )
-        });
-        view.update(cx, |m, cx| m.select_worktree(main_ix, cx));
-        cx.run_until_parked();
-
-        view.update(cx, |m, cx| m.remove_worktree(wt_path.clone(), cx));
-        cx.run_until_parked();
-
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.worktrees.len(), 1);
-            assert!(m.worktrees[0].is_main);
-            assert_eq!(m.selected_wt, Some(0), "the still-existing selection is kept");
-            assert!(!m.pins.contains_key(&wt_path));
-            assert!(m.error.is_none());
-        });
-        assert!(!std::path::Path::new(&wt_path).exists(), "the working directory is gone");
-        assert!(!config_in(&root).pins[&path].contains_key(&wt_path));
-    }
-
-    #[gpui::test]
-    fn removing_the_selected_worktree_clears_its_diff(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("remove-selected");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-        let (wt_ix, wt_path) = view.read_with(cx, |m, _| {
-            let ix = m.worktrees.iter().position(|w| !w.is_main).unwrap();
-            (ix, m.worktrees[ix].path.clone())
-        });
-        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
-        cx.run_until_parked();
-        assert!(view.read_with(cx, |m, _| !m.files.is_empty()));
-
-        view.update(cx, |m, cx| m.remove_worktree(wt_path, cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.selected_wt, None);
-            assert!(m.files.is_empty() && m.file_diff.is_empty());
-            assert_eq!(m.graph_branch, "main", "the graph falls back to the default branch");
-        });
-    }
-
-    #[gpui::test]
-    fn vertical_wheel_over_the_graph_scrolls_the_list_not_sideways(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("wheel");
-        // Enough history that the list overflows vertically.
-        for i in 0..40 {
-            std::fs::write(repo.join("a.txt"), format!("rev {i}\n")).unwrap();
-            git(&repo, &["commit", "-qam", &format!("commit {i}")]);
-        }
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-        view.update(cx, |m, cx| {
-            m.git_open = true;
-            cx.notify();
-        });
-        cx.run_until_parked();
-
-        let viewport = cx.update(|window, _| window.viewport_size());
-        // Over the graph list: bottom-left region, above the bottom bar.
-        let over_graph = gpui::point(gpui::px(300.), viewport.height - gpui::px(150.));
-        cx.simulate_mouse_move(over_graph, None, gpui::Modifiers::default());
-        cx.simulate_event(gpui::ScrollWheelEvent {
-            position: over_graph,
-            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-120.))),
-            modifiers: Default::default(),
-            touch_phase: gpui::TouchPhase::Moved,
-        });
-        cx.run_until_parked();
-
-        view.read_with(cx, |m, _| {
-            let list = m.graph_scroll.0.borrow().base_handle.offset();
-            let sideways = m.graph_hscroll.offset();
-            assert!(list.y < gpui::px(0.), "the list scrolled down: {list:?}");
-            assert_eq!(sideways.x, gpui::px(0.), "and did not move sideways: {sideways:?}");
-        });
-    }
-
-    /// Opens a repo with enough history to overflow the graph, git panel open, mouse over the list.
-    fn graph_with_overflow<'a>(
-        name: &str,
-        cx: &'a mut TestAppContext,
-    ) -> (Entity<Maditor>, &'a mut gpui::VisualTestContext, gpui::Point<Pixels>) {
-        let (root, repo) = fixture(name);
-        for i in 0..40 {
-            std::fs::write(repo.join("a.txt"), format!("rev {i}\n")).unwrap();
-            git(&repo, &["commit", "-qam", &format!("commit {i}")]);
-        }
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-        view.update(cx, |m, cx| {
-            m.git_open = true;
-            cx.notify();
-        });
-        cx.run_until_parked();
-        let viewport = cx.update(|window, _| window.viewport_size());
-        let over_graph = gpui::point(px(300.), viewport.height - px(150.));
-        cx.simulate_mouse_move(over_graph, None, gpui::Modifiers::default());
-        (view, cx, over_graph)
-    }
-
-    fn wheel(cx: &mut gpui::VisualTestContext, at: gpui::Point<Pixels>, dx: f32, dy: f32) {
-        cx.simulate_event(gpui::ScrollWheelEvent {
-            position: at,
-            delta: gpui::ScrollDelta::Pixels(gpui::point(px(dx), px(dy))),
-            modifiers: Default::default(),
-            touch_phase: gpui::TouchPhase::Moved,
-        });
-        cx.run_until_parked();
-    }
-
-    #[gpui::test]
-    fn horizontal_wheel_over_the_graph_scrolls_sideways_only(cx: &mut TestAppContext) {
-        let (view, cx, at) = graph_with_overflow("hwheel", cx);
-
-        wheel(cx, at, -80., 0.);
-        view.read_with(cx, |m, _| {
-            let list = m.graph_scroll.0.borrow().base_handle.offset();
-            let side = m.graph_hscroll.offset();
-            assert!(side.x < px(0.), "scrolled sideways: {side:?}");
-            assert_eq!(list.y, px(0.), "the list must not drift vertically: {list:?}");
-        });
-
-        // Far past the end: clamped to the content, never into blank space.
-        wheel(cx, at, -5000., 0.);
-        let max = view.read_with(cx, |m, _| m.graph_hscroll.offset().x);
-        assert!(max >= px(-(GRAPH_MIN_WIDTH_FOR_TEST)), "clamped at the right edge: {max:?}");
-        // ...and back to exactly the left edge, not past it.
-        wheel(cx, at, 5000., 0.);
-        view.read_with(cx, |m, _| assert_eq!(m.graph_hscroll.offset().x, px(0.)));
-    }
-
-    #[gpui::test]
-    fn diff_scrolls_both_ways_independently_and_resets_on_a_new_file(cx: &mut TestAppContext) {
-        let (root, repo) = fixture("diff-scroll");
-        let wt = root.join("wt");
-        // 120 lines, one very long: overflows the diff pane both vertically and horizontally.
-        let big: String = (0..120)
-            .map(|i| if i == 60 { format!("{}\n", "x".repeat(600)) } else { format!("line {i}\n") })
-            .collect();
-        std::fs::write(wt.join("big.txt"), big).unwrap();
-        git(&wt, &["add", "big.txt"]);
-        git(&wt, &["commit", "-qm", "big"]);
-
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-        let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
-        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
-        cx.run_until_parked();
-        let big_ix = view.read_with(cx, |m, _| m.files.iter().position(|f| f.path == "big.txt").unwrap());
-        view.update(cx, |m, cx| m.select_file(big_ix, cx));
-        cx.run_until_parked();
-
-        let over_diff = gpui::point(px(1200.), px(500.));
-        cx.simulate_mouse_move(over_diff, None, gpui::Modifiers::default());
-        let offsets = |cx: &mut gpui::VisualTestContext| {
-            view.read_with(cx, |m, _| (m.diff_hscroll.offset(), m.diff_scroll.0.borrow().base_handle.offset()))
-        };
-        assert!(view.read_with(cx, |m, _| m.file_diff.width(false)) > 1400., "content is wider than the pane");
-
-        wheel(cx, over_diff, -300., 0.);
-        let (side, list) = offsets(cx);
-        assert!(side.x < px(0.), "horizontal wheel scrolls the diff sideways: {side:?}");
-        assert_eq!(list.y, px(0.), "and does not drift vertically: {list:?}");
-
-        wheel(cx, over_diff, 0., -200.);
-        let (side_after, list) = offsets(cx);
-        assert!(list.y < px(0.), "vertical wheel scrolls the list: {list:?}");
-        assert_eq!(side_after.x, side.x, "and does not move it sideways");
-
-        // Far past either end is clamped to the content.
-        wheel(cx, over_diff, 20000., 0.);
-        assert_eq!(offsets(cx).0.x, px(0.), "clamped at the left edge");
-
-        // A different file starts back at the top-left.
-        wheel(cx, over_diff, -300., -200.);
-        view.update(cx, |m, cx| m.select_file(0, cx));
-        cx.run_until_parked();
-        let (side, list) = offsets(cx);
-        assert_eq!((side.x, list.y), (px(0.), px(0.)), "reset for the new file");
-    }
-
-    #[gpui::test]
-    fn appearance_cycles_persists_and_resolves_light_or_dark(cx: &mut TestAppContext) {
-        let root = std::env::temp_dir().join("maditor-native-test-appearance");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(None, config, cx));
-        // (The palette itself is a process-wide switch that parallel tests also flip on render,
-        // so assert on what this view resolves rather than on the global.)
-        let resolves_dark = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |m, window, _| m.resolve_dark(window));
-
-        assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::System);
-        view.update(cx, |m, cx| m.cycle_appearance(cx));
-        assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::Light);
-        assert!(!resolves_dark(cx), "Light forces light regardless of the OS");
-        view.update(cx, |m, cx| m.cycle_appearance(cx));
-        assert!(resolves_dark(cx), "Dark forces dark regardless of the OS");
-        view.update(cx, |m, cx| m.cycle_appearance(cx));
-        assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::System);
-
-        // The choice was written to disk.
-        view.update(cx, |m, cx| m.cycle_appearance(cx));
-        assert_eq!(config_in(&root).appearance, Appearance::Light);
-    }
-
-    #[gpui::test]
-    fn narrow_panes_switch_the_diff_to_unified(cx: &mut TestAppContext) {
-        // The threshold is what decides the layout; the pane math feeds it the available width.
-        assert!(crate::diff_view::SPLIT_MIN_WIDTH > 500.);
-        let (root, repo) = fixture("responsive");
-        let path = repo.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
-        cx.run_until_parked();
-        let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
-        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| {
-            // a.txt changes one line: 2 split rows (equal + replaced) vs 3 unified lines.
-            let (split, unified) = (m.file_diff.len(false), m.file_diff.len(true));
-            assert!(unified > split, "unified={unified} split={split}");
-        });
-    }
-
-    fn project_with_files(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!("maditor-native-test-{name}"));
-        let _ = std::fs::remove_dir_all(&root);
-        let proj = root.join("proj");
-        std::fs::create_dir_all(proj.join("src/nested")).unwrap();
-        std::fs::create_dir_all(proj.join(".git")).unwrap();
-        std::fs::write(proj.join("README.md"), "hello\n").unwrap();
-        std::fs::write(proj.join("src/main.rs"), "fn main() {}\n").unwrap();
-        std::fs::write(proj.join("src/nested/deep.txt"), "deep\n").unwrap();
-        std::fs::write(proj.join("zeta.bin"), [0u8, 159, 146, 150]).unwrap();
-        (root, proj)
-    }
-
-    #[test]
-    fn tree_lists_folders_first_hides_git_and_expands_lazily() {
-        let (_root, proj) = project_with_files("tree");
-        let names = |rows: &[edit_mode::TreeRow]| rows.iter().map(|r| format!("{}{}", " ".repeat(r.depth), r.name)).collect::<Vec<_>>();
-
-        let mut expanded = HashSet::new();
-        let rows = edit_mode::build_tree_rows(&proj, &expanded);
-        assert_eq!(names(&rows), ["src", "README.md", "zeta.bin"], ".git is hidden, folders come first");
-
-        expanded.insert(proj.join("src"));
-        expanded.insert(proj.join("src/nested"));
-        let rows = edit_mode::build_tree_rows(&proj, &expanded);
-        assert_eq!(names(&rows), ["src", " nested", "  deep.txt", " main.rs", "README.md", "zeta.bin"]);
-    }
-
-    #[gpui::test]
-    fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut TestAppContext) {
-        cx.update(|cx| crate::editor::view::bind_keys(cx));
-        let (root, proj) = project_with_files("edit");
-        let path = proj.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
-        cx.run_until_parked();
-
-        // A folder without .git is editor-only: it lands in Edit mode with its tree loaded.
-        let (root2, plain) = project_with_files("edit-plain");
-        std::fs::remove_dir_all(plain.join(".git")).unwrap();
-        let plain_path = plain.to_string_lossy().into_owned();
-        view.update(cx, |m, cx| m.open_project(plain_path.clone(), cx));
-        cx.run_until_parked();
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.issue, Some("Not a git repository"));
-            assert!(m.mode == Mode::Edit, "no git means editor-only");
-            assert_eq!(m.tree_rows.len(), 3);
-        });
-        let _ = root2;
-
-        // Open a file, type into it, then save with the editor's own shortcut.
-        let readme = plain.join("README.md");
-        view.update_in(cx, |m, window, cx| m.open_file(readme.clone(), window, cx));
-        cx.simulate_input("X");
-        let mod_key = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
-        view.read_with(cx, |m, cx| assert_eq!(m.dirty_tab_count(&plain_path, cx), 1));
-
-        // Closing the dirty tab asks first; declining keeps it.
-        view.update(cx, |m, cx| m.request_close_tab(0, cx));
-        view.read_with(cx, |m, _| assert!(m.confirm.is_some(), "unsaved changes need a confirmation"));
-        view.update_in(cx, |m, _, _| m.confirm = None);
-        assert_eq!(view.read_with(cx, |m, _| m.workspaces[&plain_path].tabs.len()), 1);
-
-        cx.simulate_keystrokes(&format!("{mod_key}-s"));
-        assert_eq!(std::fs::read_to_string(&readme).unwrap(), "Xhello\n");
-        view.read_with(cx, |m, cx| assert_eq!(m.dirty_tab_count(&plain_path, cx), 0));
-
-        // Saved, so closing needs no confirmation.
-        view.update(cx, |m, cx| m.request_close_tab(0, cx));
-        view.read_with(cx, |m, _| {
-            assert!(m.confirm.is_none());
-            assert!(m.workspaces[&plain_path].tabs.is_empty());
-        });
-    }
-
-    #[gpui::test]
-    fn opening_a_binary_file_reports_it_instead_of_a_tab(cx: &mut TestAppContext) {
-        let (root, proj) = project_with_files("binary");
-        let path = proj.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
-        cx.run_until_parked();
-        view.update_in(cx, |m, window, cx| m.open_file(proj.join("zeta.bin"), window, cx));
-        view.read_with(cx, |m, _| {
-            assert!(m.error.as_deref().unwrap_or("").contains("not a UTF-8 text file"), "{:?}", m.error);
-            assert!(m.workspaces.get(&path).map(|w| w.tabs.is_empty()).unwrap_or(true));
-        });
-    }
-
-    #[gpui::test]
-    fn closing_a_project_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
-        cx.update(|cx| crate::editor::view::bind_keys(cx));
-        let (root, proj) = project_with_files("close-dirty");
-        std::fs::remove_dir_all(proj.join(".git")).unwrap();
-        let path = proj.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
-        cx.run_until_parked();
-        view.update_in(cx, |m, window, cx| m.open_file(proj.join("README.md"), window, cx));
-        cx.simulate_input("!");
-
-        view.update(cx, |m, cx| m.request_close_project(&path, cx));
-        view.read_with(cx, |m, _| {
-            assert!(m.confirm.is_some());
-            assert!(m.config.projects.contains(&path), "still open until confirmed");
-        });
-        view.update(cx, |m, cx| m.run_confirmed(ConfirmAction::CloseProject(path.clone()), cx));
-        view.read_with(cx, |m, _| {
-            assert!(!m.config.projects.contains(&path));
-            assert!(!m.workspaces.contains_key(&path), "its editors are dropped");
-        });
-    }
-
-    #[gpui::test]
-    fn non_git_folder_reports_why_and_can_be_closed(cx: &mut TestAppContext) {
-        let root = std::env::temp_dir().join("maditor-native-test-plain");
-        let _ = std::fs::remove_dir_all(&root);
-        let plain = root.join("plain");
-        std::fs::create_dir_all(&plain).unwrap();
-        let path = plain.to_string_lossy().into_owned();
-        let config = config_in(&root);
-        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
-        cx.run_until_parked();
-
-        view.read_with(cx, |m, _| {
-            assert_eq!(m.issue, Some("Not a git repository"));
-            assert!(m.worktrees.is_empty());
-        });
-
-        view.update(cx, |m, cx| m.close_project(&path, cx));
-        view.read_with(cx, |m, _| {
-            assert!(m.config.projects.is_empty());
-            assert!(m.repo.is_empty());
-            assert_eq!(m.config.last_project, None);
-        });
-        // ...and the closure was persisted.
-        assert!(config_in(&root).projects.is_empty());
-    }
-}
+mod tests;

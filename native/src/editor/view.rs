@@ -132,6 +132,16 @@ impl Editor {
         editor
     }
 
+    /// 1-based line and column (in characters) of the caret, for the status bar.
+    pub fn cursor_display(&self) -> (usize, usize) {
+        let line = self.buffer.line(self.cursor.row);
+        (self.cursor.row + 1, line[..self.cursor.col.min(line.len())].chars().count() + 1)
+    }
+
+    pub fn line_ending(&self) -> &'static str {
+        if self.crlf { "CRLF" } else { "LF" }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.buffer.revision() != self.saved_revision
     }
