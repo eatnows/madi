@@ -1,7 +1,7 @@
 use gpui::{div, prelude::*, px, Context, IntoElement, MouseButton, Window};
 
 use super::{Maditor, PickerCancel, PickerConfirm, PickerTarget, SelectNext, SelectPrev};
-use crate::theme::*;
+use maditor_ui::theme::*;
 use maditor_git::branches::BranchRow;
 
 const WIDTH: f32 = 260.0;

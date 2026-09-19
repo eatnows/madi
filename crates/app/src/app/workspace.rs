@@ -18,12 +18,9 @@ use maditor_project::tree::{build_tree_rows, TreeRow};
 use super::{
     Confirm, ConfirmAction, Maditor, SelectNext, SelectPrev, TreeCollapse, TreeEnter, TreeExpand,
 };
-use crate::{
-    diff_view::diff_view,
-    editor::view::{Editor, EditorEvent},
-    scroll::axis_locked,
-    theme::*,
-};
+use maditor_ui::{diff_view::diff_view, scroll::axis_locked, theme::*};
+
+use crate::editor::view::{Editor, EditorEvent};
 
 /// Files bigger than this aren't opened (the view isn't built for huge buffers yet).
 const MAX_OPEN_BYTES: u64 = 2 * 1024 * 1024;

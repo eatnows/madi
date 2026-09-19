@@ -3185,6 +3185,7 @@ dependencies = [
  "maditor-git",
  "maditor-project",
  "maditor-text",
+ "maditor-ui",
  "unicode-segmentation",
 ]
 
@@ -3209,6 +3210,15 @@ dependencies = [
 [[package]]
 name = "maditor-text"
 version = "0.1.0"
+
+[[package]]
+name = "maditor-ui"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "maditor-git",
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "malloc_buf"

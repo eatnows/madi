@@ -405,7 +405,7 @@ fn diff_tab_scrolls_both_ways_independently_and_keeps_its_position_per_tab(cx: &
             (d.hscroll.offset(), d.vscroll.0.borrow().base_handle.offset())
         })
     };
-    assert!(view.read_with(cx, |m, _| crate::diff_view::width(&active_diff(m).unwrap().data, false)) > 1400., "content is wider than the pane");
+    assert!(view.read_with(cx, |m, _| maditor_ui::diff_view::width(&active_diff(m).unwrap().data, false)) > 1400., "content is wider than the pane");
 
     wheel(cx, over_diff, -300., 0.);
     let (side, list) = offsets(cx);
@@ -461,7 +461,7 @@ fn appearance_cycles_persists_and_resolves_light_or_dark(cx: &mut TestAppContext
 #[gpui::test]
 fn narrow_panes_switch_the_diff_to_unified(cx: &mut TestAppContext) {
     // The threshold is what decides the layout; the pane math feeds it the available width.
-    assert!(crate::diff_view::SPLIT_MIN_WIDTH > 500.);
+    assert!(maditor_ui::diff_view::SPLIT_MIN_WIDTH > 500.);
     let (root, repo) = fixture("responsive");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);

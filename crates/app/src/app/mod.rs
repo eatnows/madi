@@ -29,7 +29,7 @@ use maditor_project::{
     tree::TreeRow,
 };
 
-use crate::{
+use maditor_ui::{
     scroll::{axis_locked, scroll_to_top},
     text_input::TextInput,
     theme::*,
@@ -926,7 +926,7 @@ impl Maditor {
 
 impl Render for Maditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::theme::set_dark(self.resolve_dark(window));
+        maditor_ui::theme::set_dark(self.resolve_dark(window));
         let repo_ok = !self.repo.is_empty() && self.issue.is_none();
         let viewport_w = f32::from(window.viewport_size().width);
         div()

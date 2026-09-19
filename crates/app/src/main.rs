@@ -1,9 +1,5 @@
 mod app;
-mod diff_view;
 mod editor;
-mod scroll;
-mod text_input;
-mod theme;
 
 use gpui::{prelude::*, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
@@ -13,7 +9,7 @@ fn main() {
 
     Application::new().run(move |cx: &mut App| {
         app::bind_keys(cx);
-        text_input::bind_keys(cx);
+        maditor_ui::text_input::bind_keys(cx);
         editor::view::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1360.), px(820.)), cx);
         cx.open_window(

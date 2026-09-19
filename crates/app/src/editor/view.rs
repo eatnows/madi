@@ -14,7 +14,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use maditor_text::{Buffer, Pos};
-use crate::theme::*;
+use maditor_ui::theme::*;
 
 actions!(
     editor,

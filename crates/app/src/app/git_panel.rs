@@ -16,8 +16,8 @@ use maditor_git::{
 };
 
 use super::{Maditor, PickerTarget, Resize, SelectNext, SelectPrev, GRAPH_PAGE};
-use crate::scroll::{axis_locked, list_scroll_to_top, scroll_to_top};
-use crate::{diff_view::diff_view, theme::*};
+use maditor_ui::scroll::{axis_locked, list_scroll_to_top, scroll_to_top};
+use maditor_ui::{diff_view::diff_view, theme::*};
 
 const ROW_H: f32 = 36.0;
 const LANE_W: f32 = 16.0;

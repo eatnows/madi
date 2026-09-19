@@ -8,6 +8,7 @@ gpui = "0.2.2"
 maditor-git = { path = "../git" }
 maditor-project = { path = "../project" }
 maditor-text = { path = "../text" }
+maditor-ui = { path = "../ui" }
 unicode-segmentation = "1"
 chrono = "0.4"
 

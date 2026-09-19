@@ -3,7 +3,7 @@
 use gpui::{div, prelude::*, px, Context, IntoElement};
 
 use super::{workspace::{TabBody, TabKey}, Maditor};
-use crate::theme::*;
+use maditor_ui::theme::*;
 
 impl Maditor {
     /// `maditor / project / path/of/the/active/file`.

@@ -4,7 +4,7 @@ use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, IntoElement, Mo
 use super::{file_row, FileItem, Maditor, MenuTarget, PickerTarget, SelectNext, SelectPrev, SidebarView};
 use maditor_project::scan::Issue;
 
-use crate::{scroll::axis_locked, theme::*};
+use maditor_ui::{scroll::axis_locked, theme::*};
 
 impl Maditor {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
