@@ -27,7 +27,7 @@ use crate::{
     theme::*,
 };
 
-actions!(maditor, [SelectPrev, SelectNext, PickerConfirm, PickerCancel]);
+actions!(maditor, [SelectPrev, SelectNext, PickerConfirm, PickerCancel, ModalCancel]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -37,6 +37,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", SelectNext, Some("Picker")),
         KeyBinding::new("enter", PickerConfirm, Some("Picker")),
         KeyBinding::new("escape", PickerCancel, Some("Picker")),
+        KeyBinding::new("escape", ModalCancel, Some("Modal")),
     ]);
 }
 
@@ -47,6 +48,18 @@ enum PickerTarget {
     WorktreeBase(String),
     /// The branch the git panel's graph shows (pins it, ending "follow worktree").
     GraphBranch,
+}
+
+enum MenuTarget {
+    Project(String),
+    Worktree(usize),
+}
+
+/// A worktree pending the "are you sure" step before it's deleted.
+struct ConfirmRemove {
+    path: String,
+    name: String,
+    branch: Option<String>,
 }
 
 struct BranchPickerState {
@@ -132,7 +145,9 @@ pub struct Maditor {
     /// Bumped per request so a slow, superseded scan/diff can't overwrite a newer one.
     scan_gen: u64,
     diff_gen: u64,
-    menu: Option<(Point<Pixels>, String)>,
+    menu: Option<(Point<Pixels>, MenuTarget)>,
+    confirm: Option<ConfirmRemove>,
+    modal_focus: FocusHandle,
     wt_focus: FocusHandle,
     file_focus: FocusHandle,
     wt_scroll: ScrollHandle,
@@ -181,6 +196,8 @@ impl Maditor {
             scan_gen: 0,
             diff_gen: 0,
             menu: None,
+            confirm: None,
+            modal_focus: cx.focus_handle(),
             wt_focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
             wt_scroll: ScrollHandle::new(),
@@ -458,6 +475,12 @@ impl Maditor {
         self.pins.insert(worktree_path.clone(), branch);
         self.config.pins.insert(self.repo.clone(), self.pins.clone());
         self.config.save();
+        self.refresh_worktrees(Some(worktree_path), cx);
+    }
+
+    /// Reloads the worktree list keeping the selection (by path); `reload_diff_for` re-diffs that
+    /// worktree if it's the selected one.
+    fn refresh_worktrees(&mut self, reload_diff_for: Option<String>, cx: &mut Context<Self>) {
         let (repo, pins, generation) = (self.repo.clone(), self.pins.clone(), self.scan_gen);
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { worktree::list_worktrees(repo, pins) }).await;
@@ -471,11 +494,48 @@ impl Maditor {
                         this.worktrees = worktrees;
                         this.selected_wt =
                             selected_path.and_then(|p| this.worktrees.iter().position(|w| w.path == p));
-                        if selected_path_matches(&this.selected_wt, &this.worktrees, &worktree_path) {
-                            if let Some(ix) = this.selected_wt {
-                                this.select_worktree(ix, cx);
+                        match (this.selected_wt, selected_path_matches(&this.selected_wt, &this.worktrees, reload_diff_for.as_deref())) {
+                            (Some(ix), true) => this.select_worktree(ix, cx),
+                            (None, _) => {
+                                // The selected worktree is gone: clear its diff.
+                                this.files.clear();
+                                this.file_items.clear();
+                                this.selected_file = None;
+                                this.rows.clear();
+                                this.follow_worktree = true;
+                                this.sync_graph_branch(cx);
                             }
+                            _ => {}
                         }
+                    }
+                    Err(e) => this.error = Some(e),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn remove_worktree(&mut self, path: String, cx: &mut Context<Self>) {
+        self.error = None;
+        let repo = self.repo.clone();
+        let generation = self.scan_gen;
+        cx.spawn(async move |this, cx| {
+            let target = path.clone();
+            let result = cx
+                .background_spawn(async move { worktree::remove_worktree(repo, target) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.scan_gen != generation {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        this.pins.remove(&path);
+                        this.config.pins.insert(this.repo.clone(), this.pins.clone());
+                        this.config.save();
+                        this.refresh_worktrees(None, cx);
                     }
                     Err(e) => this.error = Some(e),
                 }
@@ -532,7 +592,7 @@ impl Maditor {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                        this.menu = Some((ev.position, menu_path.clone()));
+                        this.menu = Some((ev.position, MenuTarget::Project(menu_path.clone())));
                         cx.notify();
                     }),
                 )
@@ -578,8 +638,18 @@ impl Maditor {
             };
             let base = self.pins.get(&wt.path).cloned().unwrap_or_default();
             let wt_path = wt.path.clone();
+            let is_main = wt.is_main;
             div()
                 .id(("wt", ix))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                        if !is_main {
+                            this.menu = Some((ev.position, MenuTarget::Worktree(ix)));
+                            cx.notify();
+                        }
+                    }),
+                )
                 .px_2()
                 .py_2()
                 .rounded_md()
@@ -764,7 +834,15 @@ impl Maditor {
     }
 
     fn context_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let (pos, path) = self.menu.clone()?;
+        let (pos, target) = self.menu.as_ref()?;
+        let (label, danger) = match target {
+            MenuTarget::Project(_) => ("Close project", false),
+            MenuTarget::Worktree(_) => ("Remove worktree…", true),
+        };
+        let target = match target {
+            MenuTarget::Project(p) => MenuTarget::Project(p.clone()),
+            MenuTarget::Worktree(i) => MenuTarget::Worktree(*i),
+        };
         Some(
             div()
                 .id("menu-overlay")
@@ -792,19 +870,114 @@ impl Maditor {
                         .border_color(BORDER)
                         .child(
                             div()
-                                .id("menu-close-project")
+                                .id("menu-item")
                                 .px_2()
                                 .py_1()
                                 .rounded_md()
                                 .text_xs()
-                                .text_color(TEXT_STRONG)
+                                .text_color(if danger { RED } else { TEXT_STRONG })
                                 .cursor_pointer()
                                 .hover(|d| d.bg(SELECTED))
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     this.menu = None;
-                                    this.close_project(&path, cx);
+                                    match &target {
+                                        MenuTarget::Project(path) => this.close_project(path, cx),
+                                        MenuTarget::Worktree(ix) => {
+                                            if let Some(wt) = this.worktrees.get(*ix) {
+                                                this.confirm = Some(ConfirmRemove {
+                                                    path: wt.path.clone(),
+                                                    name: wt.name.clone(),
+                                                    branch: wt.branch.clone(),
+                                                });
+                                                window.focus(&this.modal_focus);
+                                            }
+                                        }
+                                    }
+                                    cx.notify();
                                 }))
-                                .child("Close project"),
+                                .child(label),
+                        ),
+                ),
+        )
+    }
+
+    /// The second, explicit step before a worktree (and its uncommitted changes) is deleted.
+    fn confirm_modal(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let c = self.confirm.as_ref()?;
+        let path = c.path.clone();
+        let message = format!(
+            "Remove worktree \"{}\" ({})? This deletes its working directory. Uncommitted changes will be lost.",
+            c.name,
+            c.branch.clone().unwrap_or_else(|| "detached".into())
+        );
+        let close = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            this.confirm = None;
+            window.focus(&this.wt_focus);
+            cx.notify();
+        };
+        Some(
+            div()
+                .id("modal-overlay")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x00000059))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| close(this, window, cx)))
+                .child(
+                    div()
+                        .id("modal")
+                        .key_context("Modal")
+                        .track_focus(&self.modal_focus)
+                        .on_action(cx.listener(move |this, _: &ModalCancel, window, cx| close(this, window, cx)))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .w(px(360.))
+                        .p_4()
+                        .rounded_lg()
+                        .bg(CHROME)
+                        .border_1()
+                        .border_color(BORDER)
+                        .child(div().text_size(px(13.5)).text_color(TEXT_STRONG).child("Remove worktree"))
+                        .child(div().mt_2().text_xs().text_color(TEXT_DIM).child(message))
+                        .child(
+                            div()
+                                .mt_4()
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("modal-cancel")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(BORDER)
+                                        .text_xs()
+                                        .text_color(TEXT_STRONG)
+                                        .cursor_pointer()
+                                        .hover(|d| d.bg(SELECTED))
+                                        .on_click(cx.listener(move |this, _, window, cx| close(this, window, cx)))
+                                        .child("Cancel"),
+                                )
+                                .child(
+                                    div()
+                                        .id("modal-remove")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(RED)
+                                        .text_xs()
+                                        .text_color(BG)
+                                        .cursor_pointer()
+                                        .hover(|d| d.opacity(0.9))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            close(this, window, cx);
+                                            this.remove_worktree(path.clone(), cx);
+                                        }))
+                                        .child("Remove"),
+                                ),
                         ),
                 ),
         )
@@ -844,8 +1017,11 @@ fn file_row(id: impl Into<gpui::ElementId>, f: &FileDiff, selected: bool) -> gpu
         .child(div().text_xs().text_color(DEL_FG).child(format!("-{}", f.deletions)))
 }
 
-fn selected_path_matches(selected: &Option<usize>, worktrees: &[WorktreeInfo], path: &str) -> bool {
-    selected.map(|i| worktrees[i].path == path).unwrap_or(false)
+fn selected_path_matches(selected: &Option<usize>, worktrees: &[WorktreeInfo], path: Option<&str>) -> bool {
+    match (selected, path) {
+        (Some(i), Some(path)) => worktrees[*i].path == path,
+        _ => false,
+    }
 }
 
 fn empty(message: impl Into<SharedString>) -> impl IntoElement {
@@ -895,6 +1071,7 @@ impl Render for Maditor {
             .when(repo_ok && self.git_open, |d| d.child(self.git_panel(cx)))
             .when(repo_ok, |d| d.child(self.bottom_bar(cx)))
             .children(self.context_menu(cx))
+            .children(self.confirm_modal(cx))
             .children(self.picker_overlay(window, cx))
     }
 }
@@ -1102,6 +1279,61 @@ mod tests {
 
         view.update(cx, |m, cx| m.select_commit(1, true, cx));
         view.read_with(cx, |m, _| assert!(m.selected_oid.is_none() && m.commit_files.is_empty()));
+    }
+
+    #[gpui::test]
+    fn removing_a_worktree_keeps_the_other_selection_and_drops_its_pin(cx: &mut TestAppContext) {
+        let (root, repo) = fixture("remove");
+        let path = repo.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
+        cx.run_until_parked();
+
+        let (main_ix, wt_path) = view.read_with(cx, |m, _| {
+            (
+                m.worktrees.iter().position(|w| w.is_main).unwrap(),
+                m.worktrees.iter().find(|w| !w.is_main).unwrap().path.clone(),
+            )
+        });
+        view.update(cx, |m, cx| m.select_worktree(main_ix, cx));
+        cx.run_until_parked();
+
+        view.update(cx, |m, cx| m.remove_worktree(wt_path.clone(), cx));
+        cx.run_until_parked();
+
+        view.read_with(cx, |m, _| {
+            assert_eq!(m.worktrees.len(), 1);
+            assert!(m.worktrees[0].is_main);
+            assert_eq!(m.selected_wt, Some(0), "the still-existing selection is kept");
+            assert!(!m.pins.contains_key(&wt_path));
+            assert!(m.error.is_none());
+        });
+        assert!(!std::path::Path::new(&wt_path).exists(), "the working directory is gone");
+        assert!(!config_in(&root).pins[&path].contains_key(&wt_path));
+    }
+
+    #[gpui::test]
+    fn removing_the_selected_worktree_clears_its_diff(cx: &mut TestAppContext) {
+        let (root, repo) = fixture("remove-selected");
+        let path = repo.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path), config, cx));
+        cx.run_until_parked();
+        let (wt_ix, wt_path) = view.read_with(cx, |m, _| {
+            let ix = m.worktrees.iter().position(|w| !w.is_main).unwrap();
+            (ix, m.worktrees[ix].path.clone())
+        });
+        view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |m, _| !m.files.is_empty()));
+
+        view.update(cx, |m, cx| m.remove_worktree(wt_path, cx));
+        cx.run_until_parked();
+        view.read_with(cx, |m, _| {
+            assert_eq!(m.selected_wt, None);
+            assert!(m.files.is_empty() && m.rows.is_empty());
+            assert_eq!(m.graph_branch, "main", "the graph falls back to the default branch");
+        });
     }
 
     #[gpui::test]
