@@ -354,6 +354,25 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+/** ArrowUp/Down moves the selection through `items`. Meant for a focusable list container (clicking
+ * a row focuses it), so whichever list was touched last is the one the keys drive. Only reacts when
+ * the container itself has focus, leaving inputs inside it (e.g. a branch search) their own keys. */
+function arrowNav<T>(items: T[], index: number, select: (item: T) => void) {
+  return (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    if (items.length === 0) return;
+    const next = clamp(index + (e.key === "ArrowDown" ? 1 : -1), 0, items.length - 1);
+    if (next === index) return;
+    select(items[next]);
+    const el = e.currentTarget;
+    requestAnimationFrame(() =>
+      el.querySelector(".list-row--selected, .file-row--selected, .graph-row--selected")?.scrollIntoView({ block: "nearest" }),
+    );
+  };
+}
+
 type BranchTreeNode = {
   segment: string;
   fullPath: string;
@@ -1044,7 +1063,10 @@ function App() {
     setGraphBranch("");
   }
 
+  const diffRequest = useRef(0);
+
   async function loadDiff(wt: WorktreeInfo, branch: string) {
+    const id = ++diffRequest.current;
     setDiff(null);
     setSelectedFile(null);
     setError(null);
@@ -1053,10 +1075,11 @@ function App() {
         worktreePath: wt.path,
         baseBranch: branch,
       });
+      if (id !== diffRequest.current) return;
       setDiff(result);
       setSelectedFile(result.files[0] ?? null);
     } catch (e) {
-      setError(String(e));
+      if (id === diffRequest.current) setError(String(e));
     }
   }
 
@@ -1215,7 +1238,15 @@ function App() {
                   <div className="panel-title">{projectName}</div>
                   <div className="panel-subtitle">Worktrees</div>
                 </div>
-                <div className="panel-body">
+                <div
+                  className="panel-body nav-list"
+                  tabIndex={0}
+                  onKeyDown={arrowNav(
+                    worktrees,
+                    worktrees.findIndex((w) => w.path === selectedWorktree?.path),
+                    selectWorktree,
+                  )}
+                >
                   {worktrees.map((wt) => (
                     <div
                       key={wt.path}
@@ -1259,7 +1290,15 @@ function App() {
                       <div className="panel-title">{selectedWorktree!.name}</div>
                       <div className="panel-subtitle">vs {selectedBase}</div>
                     </div>
-                    <div className="panel-body">
+                    <div
+                      className="panel-body nav-list"
+                      tabIndex={0}
+                      onKeyDown={arrowNav(
+                        [...committedFiles, ...uncommittedFiles],
+                        [...committedFiles, ...uncommittedFiles].indexOf(selectedFile as FileDiff),
+                        setSelectedFile,
+                      )}
+                    >
                       {committedFiles.length > 0 && (
                         <div className="file-section-label">COMMITTED · {committedFiles.length}</div>
                       )}
@@ -1502,6 +1541,9 @@ function GitPanel({
   // Synchronous in-flight guard: `loadingMore` state can't prevent a second call fired before
   // React re-renders with the state update, since both reads would still see the stale `false`.
   const fetchingRef = useRef(false);
+  // Latest commit whose files were requested; holding an arrow key fires many selections, and an
+  // older response landing late must not overwrite the newer commit's file list.
+  const commitRequest = useRef<string | null>(null);
 
   useEffect(() => {
     setCommits([]);
@@ -1545,6 +1587,7 @@ function GitPanel({
   }
 
   function closeCommitDetail() {
+    commitRequest.current = null;
     setSelectedOid(null);
     setCommitFiles(null);
     setCommitFilesError(null);
@@ -1556,6 +1599,7 @@ function GitPanel({
       closeCommitDetail();
       return;
     }
+    commitRequest.current = oid;
     setSelectedOid(oid);
     setDetailMessageCollapsed(false);
     setCommitFiles(null);
@@ -1563,10 +1607,13 @@ function GitPanel({
     setSelectedCommitFile(null);
     invoke<FileDiff[]>("diff_commit", { repoPath, oid })
       .then((files) => {
+        if (commitRequest.current !== oid) return;
         setCommitFiles(files);
         setSelectedCommitFile(files[0] ?? null);
       })
-      .catch((e) => setCommitFilesError(String(e)));
+      .catch((e) => {
+        if (commitRequest.current === oid) setCommitFilesError(String(e));
+      });
   }
 
   const rows = computeGraphRows(commits);
@@ -1591,7 +1638,16 @@ function GitPanel({
       </div>
       <div className="bottom-panel-body">
         <div className="graph-pane" style={{ width: graphPaneWidth }}>
-          <div className="graph-area" onScroll={onGraphScroll}>
+          <div
+            className="graph-area nav-list"
+            tabIndex={0}
+            onScroll={onGraphScroll}
+            onKeyDown={arrowNav(
+              commits,
+              commits.findIndex((c) => c.oid === selectedOid),
+              (c) => selectCommit(c.oid),
+            )}
+          >
             {error && <p className="diff-note">{error}</p>}
             {!error && !branch && <p className="diff-note">Select a worktree to see its history.</p>}
             {rows.map((row) => (
@@ -1642,7 +1698,15 @@ function GitPanel({
         ) : (
           <>
             <div className="panel file-panel" style={{ width: commitFileListWidth }}>
-              <div className="panel-body">
+              <div
+                className="panel-body nav-list"
+                tabIndex={0}
+                onKeyDown={arrowNav(
+                  commitFiles ?? [],
+                  (commitFiles ?? []).indexOf(selectedCommitFile as FileDiff),
+                  setSelectedCommitFile,
+                )}
+              >
                 {commitFilesError && <p className="diff-note">{commitFilesError}</p>}
                 {commitFiles?.length === 0 && <p className="diff-note">No file changes.</p>}
                 {commitFiles?.map((f) => (

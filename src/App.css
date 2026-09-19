@@ -339,6 +339,11 @@ select {
   margin-top: 6px;
 }
 
+/* Keyboard-navigable lists: the selected row already shows where you are, so no focus ring. */
+.nav-list:focus {
+  outline: none;
+}
+
 /* ---- git panel (full-width, sibling of main-row) ---- */
 
 .bottom-bar {
