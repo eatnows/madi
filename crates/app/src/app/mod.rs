@@ -13,7 +13,7 @@ use std::{
 };
 
 use gpui::{
-    actions, div, prelude::*, px, App, Context, Entity, FocusHandle, IntoElement, KeyBinding,
+    actions, div, prelude::*, px, App, Context, Entity, ExternalPaths, FocusHandle, IntoElement, KeyBinding,
     MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollHandle, SharedString,
     Subscription, Window,
 };
@@ -156,8 +156,13 @@ impl Maditor {
             git_panel,
             _git_panel_events: git_panel_events,
         };
-        if let Some(path) = initial.or_else(|| this.config.last_project.clone()) {
-            this.open_project(path, cx);
+        match initial {
+            Some(path) if std::path::Path::new(&path).is_file() => this.open_paths(&[path.into()], window, cx),
+            initial => {
+                if let Some(path) = initial.or_else(|| this.config.last_project.clone()) {
+                    this.open_project(path, cx);
+                }
+            }
         }
         this
     }
@@ -220,6 +225,23 @@ impl Maditor {
             .border_r_1()
             .border_color(BORDER())
             .children(tiles)
+            .when(self.has_loose_files(), |d| {
+                let active = self.repo.is_empty();
+                d.child(
+                    div()
+                        .id("loose-files")
+                        .size(px(32.))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .when(active, |d| d.bg(TEXT_STRONG()).text_color(BG()))
+                        .when(!active, |d| d.border_1().border_color(BORDER()).text_color(TEXT_DIM()).hover(|d| d.bg(SELECTED())))
+                        .on_click(cx.listener(|this, _, _, cx| this.show_loose_files(cx)))
+                        .child("≡"),
+                )
+            })
             .child(
                 div()
                     .id("add-project")
@@ -251,6 +273,9 @@ impl Maditor {
     fn main_area(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         let row = || div().flex_1().min_w_0().flex();
         if self.repo.is_empty() {
+            if self.has_loose_files() {
+                return row().child(self.editor_area(viewport_w - 48., cx)).into_any_element();
+            }
             return row().child(empty("No project")).into_any_element();
         }
         if self.issue == Some(Issue::Missing) {
@@ -322,6 +347,7 @@ impl Render for Maditor {
             .size_full()
             .flex()
             .flex_col()
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.open_paths(paths.paths(), window, cx)))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| this.on_mouse_move(ev, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_drag(cx)))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_drag(cx)))

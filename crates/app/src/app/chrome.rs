@@ -9,7 +9,10 @@ impl Maditor {
     /// `maditor / project / path/of/the/active/file`.
     fn breadcrumb(&self) -> String {
         if self.repo.is_empty() {
-            return "maditor".into();
+            return match self.active_tab().map(|t| &t.key) {
+                Some(TabKey::File(path)) => format!("maditor / {}", path.display()),
+                _ => "maditor".into(),
+            };
         }
         let mut crumb = format!("maditor / {}", Self::project_name(&self.repo));
         match self.active_tab().map(|t| (&t.key, &t.title)) {

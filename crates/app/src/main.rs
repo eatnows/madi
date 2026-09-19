@@ -3,8 +3,10 @@ mod app;
 use gpui::{prelude::*, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
 fn main() {
-    // Optional first argument: a repo to open (added to the saved project list).
-    let initial = std::env::args().nth(1);
+    // Optional first argument: a repo folder (added to the saved project list) or a single file.
+    let initial = std::env::args()
+        .nth(1)
+        .map(|arg| std::path::absolute(&arg).map(|p| p.to_string_lossy().into_owned()).unwrap_or(arg));
 
     Application::new().run(move |cx: &mut App| {
         app::bind_keys(cx);

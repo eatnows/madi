@@ -1,6 +1,8 @@
 //! A project's lifecycle: opening (and remembering) a folder, scanning its git repo off the UI
 //! thread, and closing it.
-use gpui::{prelude::*, Context, PathPromptOptions};
+use std::path::PathBuf;
+
+use gpui::{prelude::*, Context, PathPromptOptions, Window};
 use maditor_project::scan::{scan_repo, ScanOutcome};
 
 use super::{Confirm, ConfirmAction, Maditor, SidebarView};
@@ -86,6 +88,28 @@ impl Maditor {
         .detach();
     }
 
+    /// Folders open as projects; files open as tabs in the current workspace, or, with no project
+    /// open, in the loose-files workspace (never added to the saved project list).
+    pub(super) fn open_paths(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        for path in paths {
+            if path.is_dir() {
+                self.open_project(path.to_string_lossy().into_owned(), cx);
+            } else {
+                self.open_file(path.clone(), false, window, cx);
+            }
+        }
+    }
+
+    /// Switches to the workspace that holds files opened outside any project (keyed by "").
+    pub(super) fn show_loose_files(&mut self, cx: &mut Context<Self>) {
+        self.scan_gen += 1;
+        self.reset_view();
+        self.repo.clear();
+        self.refresh_tree();
+        self.git_panel.update(cx, |panel, cx| panel.reset(String::new(), cx));
+        cx.notify();
+    }
+
     /// Closing a project drops its open files, so unsaved changes get a confirmation first.
     pub(super) fn request_close_project(&mut self, path: &str, cx: &mut Context<Self>) {
         let dirty = self.dirty_tab_count(path, cx);
@@ -116,11 +140,7 @@ impl Maditor {
                 .cloned();
             match next {
                 Some(next) => self.open_project(next, cx),
-                None => {
-                    self.reset_view();
-                    self.repo.clear();
-                    self.git_panel.update(cx, |panel, cx| panel.reset(String::new(), cx));
-                }
+                None => self.show_loose_files(cx),
             }
         }
         cx.notify();

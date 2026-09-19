@@ -644,3 +644,41 @@ fn non_git_folder_reports_why_and_can_be_closed(cx: &mut TestAppContext) {
     // ...and the closure was persisted.
     assert!(config_in(&root).projects.is_empty());
 }
+
+#[gpui::test]
+fn a_file_opens_without_a_project_and_never_joins_the_project_list(cx: &mut TestAppContext) {
+    let (root, proj) = project_with_files("loose");
+    let note = root.join("note.md");
+    std::fs::write(&note, "# hi\n").unwrap();
+    let config = config_in(&root);
+    let file = note.to_string_lossy().into_owned();
+    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(file.clone()), config, window, cx));
+    cx.run_until_parked();
+
+    view.read_with(cx, |m, _| {
+        assert!(m.repo.is_empty(), "no project was opened for a file");
+        assert!(m.config.projects.is_empty());
+        assert!(m.has_loose_files());
+        assert_eq!(m.active_tab().map(|t| t.title.as_str()), Some("note.md"));
+    });
+
+    // A folder dropped afterwards becomes a project; the loose file stays reachable.
+    let dir = proj.to_string_lossy().into_owned();
+    view.update_in(cx, |m, window, cx| m.open_paths(&[proj.clone()], window, cx));
+    cx.run_until_parked();
+    view.read_with(cx, |m, _| {
+        assert_eq!(m.repo, dir);
+        assert!(m.has_loose_files());
+    });
+    view.update(cx, |m, cx| m.show_loose_files(cx));
+    view.read_with(cx, |m, _| assert_eq!(m.active_tab().map(|t| t.title.as_str()), Some("note.md")));
+
+    // With a project open, a dropped file becomes a tab of that project.
+    view.update_in(cx, |m, window, cx| m.open_project(dir.clone(), cx));
+    cx.run_until_parked();
+    view.update_in(cx, |m, window, cx| m.open_paths(&[proj.join("README.md")], window, cx));
+    view.read_with(cx, |m, _| {
+        assert_eq!(m.workspace().map(|w| w.tabs.len()), Some(1));
+        assert_eq!(m.workspaces[""].tabs.len(), 1);
+    });
+}

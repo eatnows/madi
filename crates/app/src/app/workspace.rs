@@ -73,6 +73,11 @@ impl Maditor {
         self.workspaces.entry(self.repo.clone()).or_default()
     }
 
+    /// Files opened outside any project live under the empty key.
+    pub(super) fn has_loose_files(&self) -> bool {
+        self.workspaces.get("").is_some_and(|w| !w.tabs.is_empty())
+    }
+
     pub(super) fn active_tab(&self) -> Option<&Tab> {
         let ws = self.workspace()?;
         ws.tabs.get(ws.active?)
