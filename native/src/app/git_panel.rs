@@ -233,6 +233,7 @@ impl Maditor {
             Resize::GitHeight => s.git_height = (s.git_height - delta).clamp(160., 640.),
             Resize::GraphPane => s.graph_pane = (s.graph_pane + delta).clamp(300., 800.),
             Resize::CommitFiles => s.commit_files = (s.commit_files + delta).clamp(160., 400.),
+            Resize::Tree => s.tree = (s.tree + delta).clamp(160., 480.),
         }
         self.dragging = Some((kind, current));
         cx.notify();
@@ -247,6 +248,7 @@ impl Maditor {
             Resize::GitHeight => "rz-git",
             Resize::GraphPane => "rz-graph",
             Resize::CommitFiles => "rz-cfiles",
+            Resize::Tree => "rz-tree",
         };
         let base = div()
             .id(id)

@@ -1,3 +1,4 @@
+mod edit_mode;
 mod git_panel;
 mod picker_view;
 
@@ -27,7 +28,7 @@ use crate::{
     theme::*,
 };
 
-actions!(maditor, [SelectPrev, SelectNext, PickerConfirm, PickerCancel, ModalCancel]);
+actions!(maditor, [SelectPrev, SelectNext, PickerConfirm, PickerCancel, ModalCancel, TreeEnter, TreeExpand, TreeCollapse]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -38,6 +39,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", PickerConfirm, Some("Picker")),
         KeyBinding::new("escape", PickerCancel, Some("Picker")),
         KeyBinding::new("escape", ModalCancel, Some("Modal")),
+        KeyBinding::new("enter", TreeEnter, Some("FileTree")),
+        KeyBinding::new("right", TreeExpand, Some("FileTree")),
+        KeyBinding::new("left", TreeCollapse, Some("FileTree")),
     ]);
 }
 
@@ -55,11 +59,26 @@ enum MenuTarget {
     Worktree(usize),
 }
 
-/// A worktree pending the "are you sure" step before it's deleted.
-struct ConfirmRemove {
-    path: String,
-    name: String,
-    branch: Option<String>,
+/// What happens once the user confirms a destructive step.
+#[derive(Clone)]
+enum ConfirmAction {
+    RemoveWorktree(String),
+    CloseTab(usize),
+    CloseProject(String),
+}
+
+/// The "are you sure" step before something destructive (deleting a worktree, discarding edits).
+struct Confirm {
+    title: String,
+    message: String,
+    label: String,
+    action: ConfirmAction,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Compare,
+    Edit,
 }
 
 struct BranchPickerState {
@@ -81,6 +100,7 @@ enum Resize {
     GitHeight,
     GraphPane,
     CommitFiles,
+    Tree,
 }
 
 impl Resize {
@@ -95,6 +115,7 @@ struct Sizes {
     git_height: f32,
     graph_pane: f32,
     commit_files: f32,
+    tree: f32,
 }
 
 enum FileItem {
@@ -148,7 +169,12 @@ pub struct Maditor {
     scan_gen: u64,
     diff_gen: u64,
     menu: Option<(Point<Pixels>, MenuTarget)>,
-    confirm: Option<ConfirmRemove>,
+    confirm: Option<Confirm>,
+    mode: Mode,
+    workspaces: HashMap<String, edit_mode::Workspace>,
+    tree_rows: Vec<edit_mode::TreeRow>,
+    tree_focus: FocusHandle,
+    tree_scroll: ScrollHandle,
     modal_focus: FocusHandle,
     wt_focus: FocusHandle,
     file_focus: FocusHandle,
@@ -204,12 +230,17 @@ impl Maditor {
             diff_gen: 0,
             menu: None,
             confirm: None,
+            mode: Mode::Compare,
+            workspaces: HashMap::new(),
+            tree_rows: Vec::new(),
+            tree_focus: cx.focus_handle(),
+            tree_scroll: ScrollHandle::new(),
             modal_focus: cx.focus_handle(),
             wt_focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
             wt_scroll: ScrollHandle::new(),
             file_scroll: ScrollHandle::new(),
-            sizes: Sizes { worktree: 248., files: 260., git_height: 280., graph_pane: 460., commit_files: 220. },
+            sizes: Sizes { worktree: 248., files: 260., git_height: 280., graph_pane: 460., commit_files: 220., tree: 260. },
             dragging: None,
             git_open: false,
             graph_branch: String::new(),
@@ -238,6 +269,36 @@ impl Maditor {
             this.open_project(path, cx);
         }
         this
+    }
+
+    /// The "Compare | Edit" switch: the app's two top-level modes.
+    fn mode_switch(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let seg = |id: &'static str, label: &'static str, mode: Mode, active: bool, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .when(active, |d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
+                .when(!active, |d| d.text_color(TEXT_DIM()).hover(|d| d.text_color(TEXT_STRONG())))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.mode = mode;
+                    cx.notify();
+                }))
+                .child(label)
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .p_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(BORDER())
+            .child(seg("mode-compare", "Compare", Mode::Compare, self.mode == Mode::Compare, cx))
+            .child(seg("mode-edit", "Edit", Mode::Edit, self.mode == Mode::Edit, cx))
     }
 
     fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
@@ -293,6 +354,7 @@ impl Maditor {
         self.scan_gen += 1;
         let generation = self.scan_gen;
         let saved = self.config.pins.get(&path).cloned().unwrap_or_default();
+        self.refresh_tree();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let repo = path.clone();
@@ -302,7 +364,13 @@ impl Maditor {
                     return;
                 }
                 match result {
-                    Ok(ScanOutcome::Issue(issue)) => this.issue = Some(issue),
+                    Ok(ScanOutcome::Issue(issue)) => {
+                        this.issue = Some(issue);
+                        // Without git there's nothing to compare, but the files can still be edited.
+                        if issue == "Not a git repository" {
+                            this.mode = Mode::Edit;
+                        }
+                    }
                     Ok(ScanOutcome::Loaded { worktrees, pins, branches }) => {
                         this.worktrees = worktrees;
                         this.branches = branches;
@@ -338,7 +406,24 @@ impl Maditor {
         .detach();
     }
 
+    /// Closing a project drops its open files, so unsaved changes get a confirmation first.
+    fn request_close_project(&mut self, path: &str, cx: &mut Context<Self>) {
+        let dirty = self.dirty_tab_count(path, cx);
+        if dirty == 0 {
+            self.close_project(path, cx);
+            return;
+        }
+        self.confirm = Some(Confirm {
+            title: "Unsaved changes".into(),
+            message: format!("{dirty} open file(s) in this project have unsaved changes. Close the project and discard them?"),
+            label: "Discard".into(),
+            action: ConfirmAction::CloseProject(path.to_string()),
+        });
+        cx.notify();
+    }
+
     fn close_project(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.workspaces.remove(path);
         let idx = self.config.projects.iter().position(|p| p == path);
         self.config.projects.retain(|p| p != path);
         if self.config.last_project.as_deref() == Some(path) {
@@ -806,6 +891,9 @@ impl Maditor {
 
     fn body(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         let row = || div().flex_1().min_w_0().flex();
+        if self.mode == Mode::Edit && !self.repo.is_empty() && self.issue != Some("Folder not found") {
+            return self.edit_body(cx);
+        }
         if self.repo.is_empty() {
             return row().child(empty("No project")).into_any_element();
         }
@@ -830,7 +918,7 @@ impl Maditor {
                         .text_color(TEXT())
                         .cursor_pointer()
                         .hover(|d| d.bg(SELECTED()))
-                        .on_click(cx.listener(move |this, _, _, cx| this.close_project(&repo, cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.request_close_project(&repo, cx)))
                         .child("Close project"),
                 )
                 .into_any_element();
@@ -934,13 +1022,18 @@ impl Maditor {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.menu = None;
                                     match &target {
-                                        MenuTarget::Project(path) => this.close_project(path, cx),
+                                        MenuTarget::Project(path) => this.request_close_project(path, cx),
                                         MenuTarget::Worktree(ix) => {
                                             if let Some(wt) = this.worktrees.get(*ix) {
-                                                this.confirm = Some(ConfirmRemove {
-                                                    path: wt.path.clone(),
-                                                    name: wt.name.clone(),
-                                                    branch: wt.branch.clone(),
+                                                this.confirm = Some(Confirm {
+                                                    title: "Remove worktree".into(),
+                                                    message: format!(
+                                                        "Remove worktree \"{}\" ({})? This deletes its working directory. Uncommitted changes will be lost.",
+                                                        wt.name,
+                                                        wt.branch.clone().unwrap_or_else(|| "detached".into())
+                                                    ),
+                                                    label: "Remove".into(),
+                                                    action: ConfirmAction::RemoveWorktree(wt.path.clone()),
                                                 });
                                                 window.focus(&this.modal_focus);
                                             }
@@ -954,15 +1047,18 @@ impl Maditor {
         )
     }
 
+    fn run_confirmed(&mut self, action: ConfirmAction, cx: &mut Context<Self>) {
+        match action {
+            ConfirmAction::RemoveWorktree(path) => self.remove_worktree(path, cx),
+            ConfirmAction::CloseTab(ix) => self.close_tab(ix, cx),
+            ConfirmAction::CloseProject(path) => self.close_project(&path, cx),
+        }
+    }
+
     /// The second, explicit step before a worktree (and its uncommitted changes) is deleted.
     fn confirm_modal(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let c = self.confirm.as_ref()?;
-        let path = c.path.clone();
-        let message = format!(
-            "Remove worktree \"{}\" ({})? This deletes its working directory. Uncommitted changes will be lost.",
-            c.name,
-            c.branch.clone().unwrap_or_else(|| "detached".into())
-        );
+        let (title, message, label, action) = (c.title.clone(), c.message.clone(), c.label.clone(), c.action.clone());
         let close = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
             this.confirm = None;
             window.focus(&this.wt_focus);
@@ -991,7 +1087,7 @@ impl Maditor {
                         .bg(CHROME())
                         .border_1()
                         .border_color(BORDER())
-                        .child(div().text_size(px(13.5)).text_color(TEXT_STRONG()).child("Remove worktree"))
+                        .child(div().text_size(px(13.5)).text_color(TEXT_STRONG()).child(title))
                         .child(div().mt_2().text_xs().text_color(TEXT_DIM()).child(message))
                         .child(
                             div()
@@ -1027,9 +1123,9 @@ impl Maditor {
                                         .hover(|d| d.opacity(0.9))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             close(this, window, cx);
-                                            this.remove_worktree(path.clone(), cx);
+                                            this.run_confirmed(action.clone(), cx);
                                         }))
-                                        .child("Remove"),
+                                        .child(label),
                                 ),
                         ),
                 ),
@@ -1143,6 +1239,7 @@ impl Render for Maditor {
                     .font_family(MONO)
                     .text_color(TEXT_DIM())
                     .child(breadcrumb)
+                    .when(!self.repo.is_empty(), |d| d.child(self.mode_switch(cx)))
                     .when_some(self.error.clone(), |d, e| d.child(div().text_color(RED()).text_xs().child(e)))
                     .child(div().flex_1())
                     .child(
@@ -1160,8 +1257,8 @@ impl Render for Maditor {
                     ),
             )
             .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.body(viewport_w, cx)))
-            .when(repo_ok && self.git_open, |d| d.child(self.git_panel(viewport_w, cx)))
-            .when(repo_ok, |d| d.child(self.bottom_bar(cx)))
+            .when(repo_ok && self.mode == Mode::Compare && self.git_open, |d| d.child(self.git_panel(viewport_w, cx)))
+            .when(repo_ok && self.mode == Mode::Compare, |d| d.child(self.bottom_bar(cx)))
             .children(self.context_menu(cx))
             .children(self.confirm_modal(cx))
             .children(self.picker_overlay(window, cx))
@@ -1618,6 +1715,119 @@ mod tests {
             // a.txt changes one line: 2 split rows (equal + replaced) vs 3 unified lines.
             let (split, unified) = (m.file_diff.len(false), m.file_diff.len(true));
             assert!(unified > split, "unified={unified} split={split}");
+        });
+    }
+
+    fn project_with_files(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("maditor-native-test-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join("src/nested")).unwrap();
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        std::fs::write(proj.join("README.md"), "hello\n").unwrap();
+        std::fs::write(proj.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(proj.join("src/nested/deep.txt"), "deep\n").unwrap();
+        std::fs::write(proj.join("zeta.bin"), [0u8, 159, 146, 150]).unwrap();
+        (root, proj)
+    }
+
+    #[test]
+    fn tree_lists_folders_first_hides_git_and_expands_lazily() {
+        let (_root, proj) = project_with_files("tree");
+        let names = |rows: &[edit_mode::TreeRow]| rows.iter().map(|r| format!("{}{}", " ".repeat(r.depth), r.name)).collect::<Vec<_>>();
+
+        let mut expanded = HashSet::new();
+        let rows = edit_mode::build_tree_rows(&proj, &expanded);
+        assert_eq!(names(&rows), ["src", "README.md", "zeta.bin"], ".git is hidden, folders come first");
+
+        expanded.insert(proj.join("src"));
+        expanded.insert(proj.join("src/nested"));
+        let rows = edit_mode::build_tree_rows(&proj, &expanded);
+        assert_eq!(names(&rows), ["src", " nested", "  deep.txt", " main.rs", "README.md", "zeta.bin"]);
+    }
+
+    #[gpui::test]
+    fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::editor::view::bind_keys(cx));
+        let (root, proj) = project_with_files("edit");
+        let path = proj.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
+        cx.run_until_parked();
+
+        // A folder without .git is editor-only: it lands in Edit mode with its tree loaded.
+        let (root2, plain) = project_with_files("edit-plain");
+        std::fs::remove_dir_all(plain.join(".git")).unwrap();
+        let plain_path = plain.to_string_lossy().into_owned();
+        view.update(cx, |m, cx| m.open_project(plain_path.clone(), cx));
+        cx.run_until_parked();
+        view.read_with(cx, |m, _| {
+            assert_eq!(m.issue, Some("Not a git repository"));
+            assert!(m.mode == Mode::Edit, "no git means editor-only");
+            assert_eq!(m.tree_rows.len(), 3);
+        });
+        let _ = root2;
+
+        // Open a file, type into it, then save with the editor's own shortcut.
+        let readme = plain.join("README.md");
+        view.update_in(cx, |m, window, cx| m.open_file(readme.clone(), window, cx));
+        cx.simulate_input("X");
+        let mod_key = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+        view.read_with(cx, |m, cx| assert_eq!(m.dirty_tab_count(&plain_path, cx), 1));
+
+        // Closing the dirty tab asks first; declining keeps it.
+        view.update(cx, |m, cx| m.request_close_tab(0, cx));
+        view.read_with(cx, |m, _| assert!(m.confirm.is_some(), "unsaved changes need a confirmation"));
+        view.update_in(cx, |m, _, _| m.confirm = None);
+        assert_eq!(view.read_with(cx, |m, _| m.workspaces[&plain_path].tabs.len()), 1);
+
+        cx.simulate_keystrokes(&format!("{mod_key}-s"));
+        assert_eq!(std::fs::read_to_string(&readme).unwrap(), "Xhello\n");
+        view.read_with(cx, |m, cx| assert_eq!(m.dirty_tab_count(&plain_path, cx), 0));
+
+        // Saved, so closing needs no confirmation.
+        view.update(cx, |m, cx| m.request_close_tab(0, cx));
+        view.read_with(cx, |m, _| {
+            assert!(m.confirm.is_none());
+            assert!(m.workspaces[&plain_path].tabs.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn opening_a_binary_file_reports_it_instead_of_a_tab(cx: &mut TestAppContext) {
+        let (root, proj) = project_with_files("binary");
+        let path = proj.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
+        cx.run_until_parked();
+        view.update_in(cx, |m, window, cx| m.open_file(proj.join("zeta.bin"), window, cx));
+        view.read_with(cx, |m, _| {
+            assert!(m.error.as_deref().unwrap_or("").contains("not a UTF-8 text file"), "{:?}", m.error);
+            assert!(m.workspaces.get(&path).map(|w| w.tabs.is_empty()).unwrap_or(true));
+        });
+    }
+
+    #[gpui::test]
+    fn closing_a_project_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::editor::view::bind_keys(cx));
+        let (root, proj) = project_with_files("close-dirty");
+        std::fs::remove_dir_all(proj.join(".git")).unwrap();
+        let path = proj.to_string_lossy().into_owned();
+        let config = config_in(&root);
+        let (view, cx) = cx.add_window_view(|_, cx| Maditor::new(Some(path.clone()), config, cx));
+        cx.run_until_parked();
+        view.update_in(cx, |m, window, cx| m.open_file(proj.join("README.md"), window, cx));
+        cx.simulate_input("!");
+
+        view.update(cx, |m, cx| m.request_close_project(&path, cx));
+        view.read_with(cx, |m, _| {
+            assert!(m.confirm.is_some());
+            assert!(m.config.projects.contains(&path), "still open until confirmed");
+        });
+        view.update(cx, |m, cx| m.run_confirmed(ConfirmAction::CloseProject(path.clone()), cx));
+        view.read_with(cx, |m, _| {
+            assert!(!m.config.projects.contains(&path));
+            assert!(!m.workspaces.contains_key(&path), "its editors are dropped");
         });
     }
 

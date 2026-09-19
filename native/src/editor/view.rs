@@ -72,6 +72,13 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
+/// Things the editor tells its owner about.
+pub enum EditorEvent {
+    SaveFailed(String),
+}
+
+impl gpui::EventEmitter<EditorEvent> for Editor {}
+
 pub const ROW_H: f32 = 20.0;
 const GUTTER_W: f32 = 56.0;
 const CHAR_W: f32 = 7.9;
@@ -129,10 +136,12 @@ impl Editor {
         self.buffer.revision() != self.saved_revision
     }
 
+    #[cfg(test)]
     pub fn text(&self) -> String {
         self.buffer.text()
     }
 
+    #[cfg(test)]
     pub fn cursor(&self) -> Pos {
         self.cursor
     }
@@ -411,7 +420,10 @@ impl Editor {
         }
     }
     fn save_action(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.save(cx);
+        if let Err(e) = self.save(cx) {
+            let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            cx.emit(EditorEvent::SaveFailed(format!("Couldn't save {name}: {e}")));
+        }
     }
 
     // ---- mouse -----------------------------------------------------------------------------
