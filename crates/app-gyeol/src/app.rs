@@ -194,6 +194,13 @@ impl Madi {
         }
     }
 
+    fn move_graph_commit(&mut self, delta: isize) {
+        if self.graph_commits.is_empty() { return; }
+        let current = self.graph_selected.map(|i| i as isize).unwrap_or(-1);
+        let next = (current + delta).clamp(0, self.graph_commits.len() as isize - 1) as usize;
+        if self.graph_selected != Some(next) { self.select_graph_commit(next); }
+    }
+
     fn open_graph_file(&mut self, ix: usize) {
         let Some(file) = self.graph_files.get(ix) else { return };
         let copied = FileDiff { path: file.path.clone(), status: file.status.clone(), additions: file.additions, deletions: file.deletions, section: file.section, binary: file.binary, lines: file.lines.iter().map(|line| madi_git::diff::DiffLine { tag: line.tag, old_lineno: line.old_lineno, new_lineno: line.new_lineno, segments: line.segments.iter().map(|s| madi_git::diff::Segment { text: s.text.clone(), emphasized: s.emphasized }).collect(), skipped: line.skipped }).collect() };
@@ -802,6 +809,13 @@ impl View for Madi {
         match event {
             Event::FocusChanged(focused) => self.window_focused = *focused,
             Event::KeyDown { key, .. } => {
+                if self.git_graph_open {
+                    match key {
+                        gyeol::Key::Named(NamedKey::ArrowUp) => { self.move_graph_commit(-1); return; }
+                        gyeol::Key::Named(NamedKey::ArrowDown) => { self.move_graph_commit(1); return; }
+                        _ => {}
+                    }
+                }
                 if self.close_confirm.is_some() {
                     if matches!(key, gyeol::Key::Named(NamedKey::Escape)) { self.close_confirm = None; }
                     return;
