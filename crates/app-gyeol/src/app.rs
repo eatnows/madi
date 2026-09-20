@@ -81,6 +81,7 @@ pub struct Madi {
     pub selected_change: Option<usize>,
     pub worktree_issue: Option<Issue>,
     pub worktree_base_picker: Option<usize>,
+    pub worktree_remove_confirm: Option<String>,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
     pub focus: Focus,
@@ -120,6 +121,7 @@ impl Madi {
             selected_change: None,
             worktree_issue: None,
             worktree_base_picker: None,
+            worktree_remove_confirm: None,
             focus_mode: false,
             focus: Focus::Tree,
             settings_open: false,
@@ -427,6 +429,13 @@ impl Madi {
         self.select_worktree(ix);
     }
 
+    fn remove_worktree(&mut self, path: String) {
+        match madi_git::worktree::remove_worktree(self.repo.clone(), path.clone()) {
+            Ok(()) => { self.pins.remove(&path); self.config.pins.insert(self.repo.clone(), self.pins.clone()); self.config.save(); self.refresh_worktrees(); }
+            Err(reason) => self.error = Some(format!("Can't remove worktree: {reason}")),
+        }
+    }
+
     fn open_diff(&mut self, ix: usize) {
         let Some(file) = self.changes.get(ix) else { return };
         self.selected_change = Some(ix);
@@ -540,6 +549,16 @@ impl Madi {
         ))
     }
 
+    fn worktree_remove_modal(&self, p: &Palette) -> Option<El> {
+        let path = self.worktree_remove_confirm.clone()?;
+        Some(div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.35)).on_click(|s: &mut Madi, _| s.worktree_remove_confirm = None).child(
+            div().w(390.).p(20.).gap(14.).rounded(8.).border(1., p.border).bg(p.bg).on_click(|_: &mut Madi, _| {})
+                .child(text("Remove worktree").text_size(15.).text_color(p.text_strong))
+                .child(text("Remove this worktree from disk?").text_size(12.).text_color(p.text_dim))
+                .child(div().row().justify_end().gap(8.).child(div().px(10.).py(6.).rounded(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.worktree_remove_confirm = None).child(text("Cancel").text_size(12.).text_color(p.text_dim))).child(div().px(10.).py(6.).rounded(6.).bg(p.red.with_alpha(0.35)).on_click(move |s: &mut Madi, _| { s.worktree_remove_confirm = None; s.remove_worktree(path.clone()); }).child(text("Remove").text_size(12.).text_color(p.text_strong)))),
+        ))
+    }
+
 
     fn topbar(&self, p: &Palette) -> El {
         let (name, place) = self.title_parts();
@@ -611,8 +630,11 @@ impl Madi {
             let branch = wt.branch.clone().unwrap_or_else(|| "(detached)".into());
             let status = match (wt.ahead, wt.behind) { (Some(0), Some(0)) => "up to date".into(), (Some(a), Some(b)) => format!("↑{a} ↓{b}"), _ => String::new() };
             let base = self.pins.get(&wt.path).cloned().unwrap_or_default();
+            let remove = wt.path.clone();
+            let removable = !wt.is_main;
             div().px(8.).py(6.).rounded(6.)
                 .bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
+                .on_mouse_down(move |s: &mut Madi, _, event| { if removable && event.button == gyeol::MouseButton::Right { s.worktree_remove_confirm = Some(remove.clone()); } })
                 .on_click(move |s: &mut Madi, _| s.select_worktree(i))
                 .child(text(wt.name.clone()).text_size(12.).text_color(p.text_strong))
                 .child(text(format!("{branch}  {status}")).text_size(11.).text_color(p.text_dim))
@@ -844,6 +866,9 @@ impl View for Madi {
             root = root.child(confirm);
         }
         if let Some(confirm) = self.project_close_modal(&p) {
+            root = root.child(confirm);
+        }
+        if let Some(confirm) = self.worktree_remove_modal(&p) {
             root = root.child(confirm);
         }
         root
