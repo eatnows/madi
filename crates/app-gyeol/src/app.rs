@@ -61,6 +61,13 @@ struct BranchPicker {
     highlighted: usize,
 }
 
+#[derive(Clone, Copy)]
+enum GraphHandle {
+    Height,
+    GraphWidth,
+    FilesWidth,
+}
+
 pub struct Tab {
     pub path: PathBuf,
     pub title: String,
@@ -119,6 +126,10 @@ pub struct Madi {
     pub graph_files: Vec<FileDiff>,
     pub graph_file_selected: Option<usize>,
     pub graph_follow: bool,
+    graph_height: f32,
+    graph_width: f32,
+    graph_files_width: f32,
+    graph_drag: Option<(GraphHandle, f32)>,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
     pub blink_epoch: Instant,
@@ -157,6 +168,10 @@ impl Madi {
             graph_files: Vec::new(),
             graph_file_selected: None,
             graph_follow: true,
+            graph_height: 380.,
+            graph_width: 430.,
+            graph_files_width: 220.,
+            graph_drag: None,
             error: None,
             blink_epoch: Instant::now(),
             window_focused: true,
@@ -234,6 +249,27 @@ impl Madi {
         if ix < self.graph_files.len() {
             self.graph_file_selected = Some(ix);
         }
+    }
+
+    fn begin_graph_drag(&mut self, handle: GraphHandle, position: (f32, f32)) {
+        let axis = match handle { GraphHandle::Height => position.1, GraphHandle::GraphWidth | GraphHandle::FilesWidth => position.0 };
+        self.graph_drag = Some((handle, axis));
+    }
+
+    fn drag_graph(&mut self, position: (f32, f32)) {
+        let Some((handle, previous)) = self.graph_drag else { return };
+        let current = match handle { GraphHandle::Height => position.1, GraphHandle::GraphWidth | GraphHandle::FilesWidth => position.0 };
+        let delta = current - previous;
+        match handle {
+            GraphHandle::Height => self.graph_height = (self.graph_height - delta).clamp(160., 640.),
+            GraphHandle::GraphWidth => self.graph_width = (self.graph_width + delta).clamp(300., 800.),
+            GraphHandle::FilesWidth => self.graph_files_width = (self.graph_files_width + delta).clamp(160., 400.),
+        }
+        self.graph_drag = Some((handle, current));
+    }
+
+    fn end_graph_drag(&mut self) {
+        self.graph_drag = None;
     }
 
     fn add_project(&mut self) {
@@ -905,6 +941,13 @@ impl Madi {
     }
 
     fn graph_view(&self, cx: &Cx, p: &Palette) -> El {
+        let handle = |kind: GraphHandle| {
+            div().w(4.).h_full().hover_bg(p.border).on_mouse_down(move |s: &mut Madi, _, event| {
+                if event.button == gyeol::MouseButton::Left {
+                    s.begin_graph_drag(kind, event.pos);
+                }
+            }).on_drag(|s: &mut Madi, _, event| s.drag_graph(event.pos)).on_mouse_up(|s: &mut Madi, _, _| s.end_graph_drag())
+        };
         let rows = uniform_list(cx, ("git-graph", &self.repo), self.graph_commits.len(), 32., |i| {
             let commit = &self.graph_commits[i];
             let row = &self.graph_rows[i];
@@ -954,17 +997,23 @@ impl Madi {
                 || div().grow().items_center().justify_center().child(text("Select a changed file").text_size(12.).text_color(p.text_dim)),
                 |file| self.graph_diff_view(cx, p, file),
             );
-            div().row().grow().child(div().w(220.).h_full().border(1., p.border_soft).child(files)).child(diff)
+            div().row().grow().child(div().w(self.graph_files_width).h_full().border(1., p.border_soft).child(files)).child(handle(GraphHandle::FilesWidth)).child(diff)
         };
-        div().h(380.).border(1., p.border).bg(p.panel)
+        div().h(self.graph_height).border(1., p.border).bg(p.panel)
             .child(div().row().items_center().h(34.).px(12.).child(div().px(6.).rounded(5.).hover_bg(p.selected).on_mouse_down(|s: &mut Madi, _, event| {
                 if event.button == gyeol::MouseButton::Left {
                     s.open_branch_picker(BranchPickerTarget::Graph, event.pos);
                 }
             }).child(text(format!("Graph · {} ⌄", self.graph_branch)).text_size(12.).text_color(p.text_strong))).child(text(if self.graph_follow { "following worktree" } else { "pinned" }).text_size(10.).text_color(if self.graph_follow { p.green } else { p.amber })).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
             .child(div().h(1.).bg(p.border)).child(div().row().grow()
-                .child(div().w(430.).h_full().border(1., p.border_soft).child(div().grow().overflow_x_scroll().child(rows.w(760.))))
+                .child(div().w(self.graph_width).h_full().border(1., p.border_soft).child(div().grow().overflow_x_scroll().child(rows.w(760.))))
+                .child(handle(GraphHandle::GraphWidth))
                 .child(changes))
+            .child(div().absolute().top(0.).left(0.).right(0.).h(5.).hover_bg(p.border).on_mouse_down(|s: &mut Madi, _, event| {
+                if event.button == gyeol::MouseButton::Left {
+                    s.begin_graph_drag(GraphHandle::Height, event.pos);
+                }
+            }).on_drag(|s: &mut Madi, _, event| s.drag_graph(event.pos)).on_mouse_up(|s: &mut Madi, _, _| s.end_graph_drag()))
     }
 
     /// The shared branch picker from the GPUI app: typed filtering, slash-grouped folders and
@@ -1522,6 +1571,25 @@ mod tests {
         host.key(gyeol::Key::Char("e".into()), Some("e"));
         host.key(gyeol::Key::Char("t".into()), Some("t"));
         assert!(has_text(&host, "beta") && !has_text(&host, "alpha"), "typing filters the grouped list");
+    }
+
+    #[test]
+    fn graph_panel_drag_handles_resize_with_the_original_limits() {
+        let (mut host, _, _) = app("graph-resize");
+        let app = host.state_mut();
+        app.begin_graph_drag(GraphHandle::GraphWidth, (0., 0.));
+        app.drag_graph((1_000., 0.));
+        assert_eq!(app.graph_width, 800.);
+        app.begin_graph_drag(GraphHandle::FilesWidth, (1_000., 0.));
+        app.drag_graph((0., 0.));
+        assert_eq!(app.graph_files_width, 160.);
+        app.begin_graph_drag(GraphHandle::Height, (0., 0.));
+        app.drag_graph((0., 1_000.));
+        assert_eq!(app.graph_height, 160.);
+        app.drag_graph((0., -1_000.));
+        assert_eq!(app.graph_height, 640.);
+        app.end_graph_drag();
+        assert!(app.graph_drag.is_none());
     }
 
     #[test]
