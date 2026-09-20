@@ -86,8 +86,6 @@ pub struct Madi {
     pub settings_tab: SettingsTab,
     /// The dirty editor tab awaiting a Save / Discard / Cancel decision.
     pub close_confirm: Option<usize>,
-    pub add_project_open: bool,
-    pub add_project_path: String,
     pub git_graph_open: bool,
     pub graph_commits: Vec<CommitInfo>,
     pub graph_rows: Vec<GraphRow>,
@@ -118,8 +116,6 @@ impl Madi {
             settings_open: false,
             settings_tab: SettingsTab::General,
             close_confirm: None,
-            add_project_open: false,
-            add_project_path: String::new(),
             git_graph_open: false,
             graph_commits: Vec::new(),
             graph_rows: Vec::new(),
@@ -174,13 +170,19 @@ impl Madi {
         }
     }
 
-    fn submit_project_path(&mut self) {
-        let path = self.add_project_path.trim().to_string();
-        if path.is_empty() { return; }
-        if !Path::new(&path).is_dir() { self.error = Some(format!("Folder not found: {path}")); return; }
-        self.add_project_open = false;
-        self.add_project_path.clear();
-        self.open_project(path);
+    fn add_project(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("osascript")
+                .args(["-e", "POSIX path of (choose folder with prompt \"Open a git repository\")"])
+                .output();
+            let Ok(output) = output else { self.error = Some("Can't open the folder picker".into()); return };
+            if !output.status.success() { return; } // The user cancelled the picker.
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() { self.open_project(path); }
+        }
+        #[cfg(not(target_os = "macos"))]
+        { self.error = Some("Folder picking is not available on this platform yet".into()); }
     }
 
     fn workspace(&self) -> Option<&Workspace> {
@@ -415,7 +417,7 @@ impl Madi {
             if active { tile.bg(p.text_strong) } else { tile.border(1., p.border).hover_bg(p.selected) }
         });
         div().w(48.).bg(p.chrome).items_center().py(8.).gap(8.).children(tiles)
-            .child(div().size(32.).items_center().justify_center().rounded(6.).border(1., p.border).hover_bg(p.selected).on_click(|s: &mut Madi, _| { s.add_project_open = true; s.add_project_path.clear(); }).child(text("＋").text_color(p.text_dim)))
+            .child(div().size(32.).items_center().justify_center().rounded(6.).border(1., p.border).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.add_project()).child(text("＋").text_color(p.text_dim)))
     }
 
     fn icon_button(&self, p: &Palette, active: bool, icon: El, on_click: impl Fn(&mut Madi, &mut Cx) + 'static) -> El {
@@ -447,16 +449,6 @@ impl Madi {
         ))
     }
 
-    fn add_project_modal(&self, p: &Palette) -> Option<El> {
-        if !self.add_project_open { return None; }
-        Some(div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.35)).on_click(|s: &mut Madi, _| s.add_project_open = false).child(
-            div().w(460.).p(20.).gap(12.).rounded(8.).border(1., p.border).bg(p.bg).on_click(|_: &mut Madi, _| {})
-                .child(text("Add project").text_size(15.).text_color(p.text_strong))
-                .child(text("Enter the folder path, then press Enter.").text_size(12.).text_color(p.text_dim))
-                .child(div().h(32.).px(10.).items_center().rounded(6.).border(1., p.border).bg(p.panel).child(text(if self.add_project_path.is_empty() { "Folder path".into() } else { self.add_project_path.clone() }).text_size(12.).text_color(if self.add_project_path.is_empty() { p.text_dim } else { p.text })))
-                .child(div().row().justify_end().gap(8.).child(div().px(10.).py(6.).rounded(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.add_project_open = false).child(text("Cancel").text_size(12.).text_color(p.text_dim))).child(div().px(10.).py(6.).rounded(6.).bg(p.selected).on_click(|s: &mut Madi, _| s.submit_project_path()).child(text("Add").text_size(12.).text_color(p.text_strong)))),
-        ))
-    }
 
     fn topbar(&self, p: &Palette) -> El {
         let (name, place) = self.title_parts();
@@ -744,9 +736,6 @@ impl View for Madi {
         if let Some(confirm) = self.close_confirm_modal(&p) {
             root = root.child(confirm);
         }
-        if let Some(add) = self.add_project_modal(&p) {
-            root = root.child(add);
-        }
         root
     }
 
@@ -754,19 +743,6 @@ impl View for Madi {
         match event {
             Event::FocusChanged(focused) => self.window_focused = *focused,
             Event::KeyDown { key, .. } => {
-                if self.add_project_open {
-                    match key {
-                        gyeol::Key::Named(NamedKey::Escape) => self.add_project_open = false,
-                        gyeol::Key::Named(NamedKey::Enter) => self.submit_project_path(),
-                        gyeol::Key::Named(NamedKey::Backspace) => { self.add_project_path.pop(); }
-                        gyeol::Key::Char(c) if cx.modifiers.command() && c.eq_ignore_ascii_case("v") => {
-                            if let Some(text) = cx.clipboard_text() { self.add_project_path.push_str(&text); }
-                        }
-                        gyeol::Key::Char(c) if !cx.modifiers.command() => self.add_project_path.push_str(c),
-                        _ => {}
-                    }
-                    return;
-                }
                 if self.close_confirm.is_some() {
                     if matches!(key, gyeol::Key::Named(NamedKey::Escape)) { self.close_confirm = None; }
                     return;
@@ -1179,14 +1155,13 @@ mod tests {
     }
 
     #[test]
-    fn project_plus_accepts_a_typed_folder_path() {
+    fn opening_a_folder_registers_it_as_a_project() {
         let (mut host, root, _) = app("add-project");
         let extra = root.join("extra");
         std::fs::create_dir_all(&extra).unwrap();
-        host.click_text("＋");
-        assert!(has_text(&host, "Add project"));
-        typed(&mut host, &extra.to_string_lossy());
-        press(&mut host, Key::Named(NamedKey::Enter));
+        host.state_mut().open_project(extra.to_string_lossy().into_owned());
+        host.frame();
         assert_eq!(host.state().repo, extra.to_string_lossy());
+        assert!(host.state().config.projects.iter().any(|p| p == &extra.to_string_lossy()));
     }
 }
