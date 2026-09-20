@@ -33,6 +33,8 @@ const ROW_H: f32 = 24.;
 const BLINK: Duration = Duration::from_millis(530);
 /// Files bigger than this aren't opened (the editor isn't built for huge buffers yet).
 const MAX_OPEN_BYTES: u64 = 2 * 1024 * 1024;
+/// Matches the original GitPanel: the graph grows in pages as its virtualized list reaches the end.
+const GRAPH_PAGE: usize = 100;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SidebarView {
@@ -126,6 +128,7 @@ pub struct Madi {
     pub graph_files: Vec<FileDiff>,
     pub graph_file_selected: Option<usize>,
     pub graph_follow: bool,
+    graph_has_more: bool,
     graph_height: f32,
     graph_width: f32,
     graph_files_width: f32,
@@ -168,6 +171,7 @@ impl Madi {
             graph_files: Vec::new(),
             graph_file_selected: None,
             graph_follow: true,
+            graph_has_more: true,
             graph_height: 380.,
             graph_width: 430.,
             graph_files_width: 220.,
@@ -219,9 +223,30 @@ impl Madi {
     }
 
     fn load_graph(&mut self, branch: String) {
-        match git_log::git_log(self.repo.clone(), branch.clone(), 0, 300) {
-            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.graph_selected = None; self.graph_files.clear(); self.graph_file_selected = None; self.branch_picker = None; self.git_graph_open = true; }
+        match git_log::git_log(self.repo.clone(), branch.clone(), 0, GRAPH_PAGE) {
+            Ok(commits) => { self.graph_has_more = commits.len() == GRAPH_PAGE; self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.graph_selected = None; self.graph_files.clear(); self.graph_file_selected = None; self.branch_picker = None; self.git_graph_open = true; }
             Err(reason) => self.error = Some(format!("Can't load git graph: {reason}")),
+        }
+    }
+
+    fn load_more_graph(&mut self) {
+        if !self.graph_has_more || self.graph_branch.is_empty() {
+            return;
+        }
+        match git_log::git_log(self.repo.clone(), self.graph_branch.clone(), self.graph_commits.len(), GRAPH_PAGE) {
+            Ok(more) => {
+                self.graph_has_more = more.len() == GRAPH_PAGE;
+                self.graph_commits.extend(more);
+                self.graph_rows = compute_rows(&self.graph_commits);
+            }
+            Err(reason) => self.error = Some(format!("Can't load more git history: {reason}")),
+        }
+    }
+
+    fn load_graph_if_near_end(&mut self, cx: &Cx) {
+        let visible = cx.visible_rows(("git-graph", &self.repo), self.graph_commits.len(), 32.);
+        if visible.end.saturating_add(30) >= self.graph_commits.len() {
+            self.load_more_graph();
         }
     }
 
@@ -1128,6 +1153,7 @@ impl View for Madi {
     fn event(&mut self, event: &Event, cx: &mut Cx) {
         match event {
             Event::FocusChanged(focused) => self.window_focused = *focused,
+            Event::Scroll { .. } if self.git_graph_open => self.load_graph_if_near_end(cx),
             Event::KeyDown { key, text, .. } => {
                 if self.picker_key(key, text.as_deref(), cx) {
                     return;
@@ -1590,6 +1616,29 @@ mod tests {
         assert_eq!(app.graph_height, 640.);
         app.end_graph_drag();
         assert!(app.graph_drag.is_none());
+    }
+
+    #[test]
+    fn graph_history_loads_in_pages_until_the_end() {
+        let root = std::env::temp_dir().join("madi-gyeol-test-graph-pages");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.email", "t@example.test"]);
+        git(&root, &["config", "user.name", "Test"]);
+        for ix in 0..105 {
+            std::fs::write(root.join("history.txt"), format!("revision {ix}\n")).unwrap();
+            git(&root, &["add", "."]);
+            git(&root, &["commit", "-qm", &format!("revision {ix}")]);
+        }
+        let config = Config::at(Some(root.join("config.json")));
+        let mut app = Madi::new(Some(root.to_string_lossy().into_owned()), config);
+        app.load_graph("main".into());
+        assert_eq!(app.graph_commits.len(), GRAPH_PAGE);
+        assert!(app.graph_has_more);
+        app.load_more_graph();
+        assert_eq!(app.graph_commits.len(), 105);
+        assert!(!app.graph_has_more && app.graph_rows.len() == 105);
     }
 
     #[test]
