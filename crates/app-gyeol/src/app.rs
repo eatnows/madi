@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gyeol::{div, text, uniform_list, Color, Cx, Element, Event, SystemTheme, View};
+use gyeol::{div, text, uniform_list, Color, Cx, Element, Event, NamedKey, SystemTheme, View};
 use madi_git::{diff::{self, FileDiff}, worktree::WorktreeInfo};
 use madi_project::{
     config::{Appearance, Config},
@@ -84,6 +84,8 @@ pub struct Madi {
     pub focus: Focus,
     pub settings_open: bool,
     pub settings_tab: SettingsTab,
+    /// The dirty editor tab awaiting a Save / Discard / Cancel decision.
+    pub close_confirm: Option<usize>,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
     pub blink_epoch: Instant,
@@ -109,6 +111,7 @@ impl Madi {
             focus: Focus::Tree,
             settings_open: false,
             settings_tab: SettingsTab::General,
+            close_confirm: None,
             error: None,
             blink_epoch: Instant::now(),
             window_focused: true,
@@ -248,9 +251,13 @@ impl Madi {
     pub fn close_tab(&mut self, ix: usize) {
         let Some(tab) = self.workspace().and_then(|w| w.tabs.get(ix)) else { return };
         if tab.editor.doc.is_dirty() {
-            self.error = Some(format!("\"{}\" has unsaved changes: save it (Cmd+S) before closing", tab.title));
+            self.close_confirm = Some(ix);
             return;
         }
+        self.remove_tab(ix);
+    }
+
+    fn remove_tab(&mut self, ix: usize) {
         let ws = self.workspace_mut();
         ws.tabs.remove(ix);
         ws.active = match ws.active {
@@ -259,6 +266,20 @@ impl Madi {
             Some(a) if a == ix => Some(ix.min(ws.tabs.len() - 1)),
             other => other,
         };
+    }
+
+    fn resolve_close(&mut self, save: bool, cx: &mut Cx) {
+        let Some(ix) = self.close_confirm.take() else { return };
+        if save {
+            let Some(tab) = self.workspace_mut().tabs.get_mut(ix) else { return };
+            let name = tab.title.clone();
+            match std::fs::write(&tab.path, tab.editor.doc.text_for_save()) {
+                Ok(()) => tab.editor.doc.mark_saved(),
+                Err(e) => { self.error = Some(format!("Can't save {name}: {e}")); return; }
+            }
+        }
+        self.remove_tab(ix);
+        self.touched(cx);
     }
 
     // ---- worktrees and diffs -----------------------------------------------------------------
@@ -374,6 +395,23 @@ impl Madi {
             .hover_bg(p.selected)
             .on_click(on_click)
             .child(icon)
+    }
+
+    fn close_confirm_modal(&self, p: &Palette) -> Option<El> {
+        let ix = self.close_confirm?;
+        let title = self.workspace()?.tabs.get(ix)?.title.clone();
+        let button = |label: &'static str, color: Color, action: fn(&mut Madi, &mut Cx)| {
+            div().px(10.).py(6.).rounded(6.).bg(color).hover_bg(p.selected).on_click(action).child(text(label).text_size(12.).text_color(p.text_strong))
+        };
+        Some(div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.35)).on_click(|s: &mut Madi, _| s.close_confirm = None).child(
+            div().w(380.).p(20.).gap(14.).rounded(8.).border(1., p.border).bg(p.bg).on_click(|_: &mut Madi, _| {})
+                .child(text("Unsaved changes").text_size(15.).text_color(p.text_strong))
+                .child(text(format!("Save changes to \"{title}\" before closing? ")).text_size(12.).text_color(p.text_dim))
+                .child(div().row().justify_end().gap(8.)
+                    .child(button("Cancel", p.panel, |s, _| s.close_confirm = None))
+                    .child(button("Discard", p.red.with_alpha(0.35), |s, cx| s.resolve_close(false, cx)))
+                    .child(button("Save", p.selected, |s, cx| s.resolve_close(true, cx)))),
+        ))
     }
 
     fn topbar(&self, p: &Palette) -> El {
@@ -634,6 +672,9 @@ impl View for Madi {
         if let Some(settings) = self.settings_modal(&p) {
             root = root.child(settings);
         }
+        if let Some(confirm) = self.close_confirm_modal(&p) {
+            root = root.child(confirm);
+        }
         root
     }
 
@@ -641,6 +682,10 @@ impl View for Madi {
         match event {
             Event::FocusChanged(focused) => self.window_focused = *focused,
             Event::KeyDown { key, .. } => {
+                if self.close_confirm.is_some() {
+                    if matches!(key, gyeol::Key::Named(NamedKey::Escape)) { self.close_confirm = None; }
+                    return;
+                }
                 if self.settings_key(key, cx) {
                     return;
                 }
@@ -650,7 +695,7 @@ impl View for Madi {
                 }
                 self.editor_event(event, cx);
             }
-            _ if !self.settings_open => self.editor_event(event, cx),
+            _ if !self.settings_open && self.close_confirm.is_none() => self.editor_event(event, cx),
             _ => {}
         }
     }
@@ -862,16 +907,22 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_with_unsaved_changes_refuses_to_close() {
-        let (mut host, _, _) = app("close");
+    fn closing_a_dirty_tab_can_save_or_discard() {
+        let (mut host, _, path) = app("close");
         host.click_text("README.md");
         typed(&mut host, "x");
         host.click_text("●");
         assert_eq!(host.state().workspace().unwrap().tabs.len(), 1);
-        assert!(host.state().error.as_deref().unwrap_or("").contains("unsaved"), "{:?}", host.state().error);
-        shortcut(&mut host, "s");
-        host.click_text("×");
-        assert!(host.state().workspace().unwrap().tabs.is_empty(), "closes once saved");
+        assert!(has_text(&host, "Unsaved changes"));
+        host.click_text("Save");
+        assert!(host.state().workspace().unwrap().tabs.is_empty(), "save closes the tab");
+        assert_eq!(std::fs::read_to_string(Path::new(&path).join("README.md")).unwrap(), "x# hi\n");
+
+        host.state_mut().open_file(Path::new(&path).join("README.md"), false);
+        typed(&mut host, "y");
+        host.click_text("●");
+        host.click_text("Discard");
+        assert!(host.state().workspace().unwrap().tabs.is_empty(), "discard closes without saving");
     }
 
     fn position(host: &TestHost<Madi>, line: &str, col: usize) -> (f32, f32) {
