@@ -638,11 +638,17 @@ impl Madi {
                 .on_click(move |s: &mut Madi, _| s.select_worktree(i))
                 .child(text(wt.name.clone()).text_size(12.).text_color(p.text_strong))
                 .child(text(format!("{branch}  {status}")).text_size(11.).text_color(p.text_dim))
-                .child(div().px(4.).rounded(4.).hover_bg(p.border).on_click(move |s: &mut Madi, _| s.worktree_base_picker = Some(i)).child(text(format!("base: {base} ⌄")).text_size(10.).text_color(p.text_dim)))
+                .child(div().px(4.).rounded(4.).hover_bg(p.border).on_click(move |s: &mut Madi, _| {
+                    s.worktree_base_picker = (s.worktree_base_picker != Some(i)).then_some(i);
+                }).child(text(format!("base: {base} ⌄")).text_size(10.).text_color(p.text_dim)))
         }).h(220.).p(8.).scrollbar(p.text_dim.with_alpha(0.4));
         let base_picker = self.worktree_base_picker.and_then(|ix| self.worktrees.get(ix).map(|wt| (ix, wt.name.clone()))).map(|(ix, name)| {
             let branches = self.branches.iter().cloned().map(|branch| { let target = branch.clone(); div().px(7.).py(3.).rounded(4.).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.set_worktree_base(ix, target.clone())).child(text(branch).text_size(11.).text_color(p.text_dim)) });
-            div().px(12.).py(6.).gap(3.).border(1., p.border).bg(p.bg).child(text(format!("Base branch for {name}")).text_size(11.).text_color(p.text_strong)).children(branches)
+            // This stays out of the list's layout so a long branch list is a proper popover,
+            // rather than pushing the changes pane down.
+            div().absolute().left(14.).top((8. + ix as f32 * 62. + 47.).min(205.)).w(248.).max_h(180.).overflow_y_scroll().p(6.).gap(2.).rounded(6.).border(1., p.border).bg(p.bg)
+                .child(text(format!("Base branch for {name}")).px(5.).py(3.).text_size(11.).text_color(p.text_strong))
+                .children(branches)
         });
         let changes_title = self.selected_worktree.and_then(|i| self.worktrees.get(i)).map(|wt| format!("CHANGES · vs {}", self.pins.get(&wt.path).cloned().unwrap_or_default())).unwrap_or_else(|| "CHANGES".into());
         let changes = if self.selected_worktree.is_none() {
@@ -799,10 +805,12 @@ impl Madi {
             let target = branch.clone();
             div().px(8.).py(4.).rounded(5.).bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| { s.graph_follow = false; s.load_graph(target.clone()) }).child(text(branch).text_size(11.).text_color(if selected { p.text_strong } else { p.text_dim }))
         });
+        let picker = self.graph_picker_open.then(|| {
+            div().absolute().left(12.).top(32.).w(248.).max_h(210.).overflow_y_scroll().p(6.).gap(2.).rounded(6.).border(1., p.border).bg(p.bg).children(branches)
+        });
         div().h(320.).border(1., p.border).bg(p.panel)
             .child(div().row().items_center().h(34.).px(12.).child(div().px(6.).rounded(5.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.graph_picker_open = !s.graph_picker_open).child(text(format!("Graph · {} ⌄", self.graph_branch)).text_size(12.).text_color(p.text_strong))).child(text(if self.graph_follow { "following worktree" } else { "pinned" }).text_size(10.).text_color(if self.graph_follow { p.green } else { p.amber })).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
-            .child(if self.graph_picker_open { div().row().px(12.).pb(6.).gap(4.).children(branches) } else { div() })
-            .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.))).children(detail)
+            .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.))).children(detail).children(picker)
     }
 
     fn main_area(&self, cx: &mut Cx, p: &Palette) -> El {
