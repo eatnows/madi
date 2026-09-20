@@ -23,6 +23,7 @@ no UI dependency, reusable UI pieces, views, and the app that assembles them):
 | `crates/ui` | theme, scroll helpers, IME text input, diff drawing, small widgets | yes |
 | `crates/editor` | the editor view, a thin layer over `text::Document` | yes |
 | `crates/app` | the `madi` binary: workspace/tabs, sidebar, git panel, overlays, chrome | yes |
+| `crates/app-gyeol` | the same app being ported piece by piece to the [gyeol](https://github.com/eatnows/gyeol) UI toolkit (`madi-gyeol` binary; needs `../gyeol` checked out next to this repo) | yes |
 
 Logic lives in the crates without gpui, so it is tested without a window; the app's tests drive
 real keystrokes, wheel events and repos through GPUI's test harness.
