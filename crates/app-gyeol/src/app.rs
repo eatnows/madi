@@ -1,20 +1,28 @@
-//! The app frame: project rail, top bar, sidebar with the file tree, status bar.
+//! The app: project rail, top bar, sidebar with the file tree, tabs with editors, status bar.
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
-use gyeol::{div, text, uniform_list, Color, Cx, Element, SystemTheme, View};
+use gyeol::{div, text, uniform_list, Color, Cx, Element, Event, SystemTheme, View};
 use madi_project::{
     config::{Appearance, Config},
     tree::{build_tree_rows, TreeRow},
 };
 
-use crate::{icons, theme::Palette};
+use crate::{
+    editor::{self, Editor},
+    icons,
+    theme::Palette,
+};
 
 type El = Element<Madi>;
 
 const ROW_H: f32 = 24.;
+const BLINK: Duration = Duration::from_millis(530);
+/// Files bigger than this aren't opened (the editor isn't built for huge buffers yet).
+const MAX_OPEN_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SidebarView {
@@ -22,11 +30,29 @@ pub enum SidebarView {
     Worktrees,
 }
 
+/// Which part of the window has the keyboard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Focus {
+    Tree,
+    Editor,
+}
+
+pub struct Tab {
+    pub path: PathBuf,
+    pub title: String,
+    /// A preview tab (italic) is replaced by the next thing opened in preview; editing it, or opening
+    /// it again for real, makes it a regular tab.
+    pub preview: bool,
+    pub editor: Editor,
+}
+
 /// What is remembered per project so switching projects never loses your place.
 #[derive(Default)]
 pub struct Workspace {
     pub expanded: HashSet<PathBuf>,
     pub selected: Option<PathBuf>,
+    pub tabs: Vec<Tab>,
+    pub active: Option<usize>,
 }
 
 pub struct Madi {
@@ -38,6 +64,11 @@ pub struct Madi {
     pub sidebar_width: f32,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
+    pub focus: Focus,
+    /// The last failure to show in the top bar (a file that can't be opened or saved).
+    pub error: Option<String>,
+    pub blink_epoch: Instant,
+    pub window_focused: bool,
 }
 
 impl Madi {
@@ -50,9 +81,25 @@ impl Madi {
             sidebar_view: SidebarView::Files,
             sidebar_width: 280.,
             focus_mode: false,
+            focus: Focus::Tree,
+            error: None,
+            blink_epoch: Instant::now(),
+            window_focused: true,
         };
-        if let Some(path) = initial.or_else(|| app.config.last_project.clone()) {
-            app.open_project(path);
+        match initial {
+            // A file: open its folder as the project and the file in a tab.
+            Some(path) if Path::new(&path).is_file() => {
+                let file = PathBuf::from(&path);
+                if let Some(dir) = file.parent() {
+                    app.open_project(dir.to_string_lossy().into_owned());
+                    app.open_file(file, false);
+                }
+            }
+            initial => {
+                if let Some(path) = initial.or_else(|| app.config.last_project.clone()) {
+                    app.open_project(path);
+                }
+            }
         }
         app
     }
@@ -69,6 +116,7 @@ impl Madi {
         self.config.last_project = Some(path.clone());
         self.config.save();
         self.repo = path;
+        self.error = None;
         self.refresh_tree();
     }
 
@@ -97,6 +145,91 @@ impl Madi {
         self.workspace_mut().selected = Some(path);
     }
 
+    // ---- tabs --------------------------------------------------------------------------------
+
+    pub fn active_tab(&self) -> Option<&Tab> {
+        let ws = self.workspace()?;
+        ws.tabs.get(ws.active?)
+    }
+
+    pub fn active_editor(&self) -> Option<&Editor> {
+        self.active_tab().map(|t| &t.editor)
+    }
+
+    pub fn active_editor_mut(&mut self) -> Option<&mut Editor> {
+        let ws = self.workspaces.get_mut(&self.repo)?;
+        let ix = ws.active?;
+        ws.tabs.get_mut(ix).map(|t| &mut t.editor)
+    }
+
+    /// Opens a file as a tab (or focuses its tab). A preview open replaces the current preview tab; a
+    /// regular open pins whatever it lands on.
+    pub fn open_file(&mut self, path: PathBuf, preview: bool) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.focus = Focus::Editor;
+        self.blink_epoch = Instant::now();
+        if let Some(ix) = self.workspace().and_then(|w| w.tabs.iter().position(|t| t.path == path)) {
+            let ws = self.workspace_mut();
+            if !preview {
+                ws.tabs[ix].preview = false;
+            }
+            ws.active = Some(ix);
+            return;
+        }
+        let opened = std::fs::metadata(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|m| if m.len() > MAX_OPEN_BYTES { Err("file is too large to open".to_string()) } else { Ok(()) })
+            .and_then(|_| std::fs::read(&path).map_err(|e| e.to_string()))
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| "not a UTF-8 text file".to_string()));
+        let text = match opened {
+            Ok(text) => text,
+            Err(reason) => {
+                self.error = Some(format!("Can't open {name}: {reason}"));
+                return;
+            }
+        };
+        self.error = None;
+        let tab = Tab { path: path.clone(), title: name, preview, editor: Editor::new(&text, path) };
+        let ws = self.workspace_mut();
+        let ix = match (preview, ws.tabs.iter().position(|t| t.preview)) {
+            (true, Some(replace)) => {
+                ws.tabs[replace] = tab;
+                replace
+            }
+            _ => {
+                ws.tabs.push(tab);
+                ws.tabs.len() - 1
+            }
+        };
+        ws.active = Some(ix);
+    }
+
+    pub fn activate_tab(&mut self, ix: usize) {
+        let ws = self.workspace_mut();
+        if ix < ws.tabs.len() {
+            ws.active = Some(ix);
+            self.focus = Focus::Editor;
+            self.blink_epoch = Instant::now();
+        }
+    }
+
+    /// Closes a tab. A file with unsaved changes stays open until it is saved (no confirmation dialog yet).
+    pub fn close_tab(&mut self, ix: usize) {
+        let Some(tab) = self.workspace().and_then(|w| w.tabs.get(ix)) else { return };
+        if tab.editor.doc.is_dirty() {
+            self.error = Some(format!("\"{}\" has unsaved changes: save it (Cmd+S) before closing", tab.title));
+            return;
+        }
+        let ws = self.workspace_mut();
+        ws.tabs.remove(ix);
+        ws.active = match ws.active {
+            _ if ws.tabs.is_empty() => None,
+            Some(a) if a > ix => Some(a - 1),
+            Some(a) if a == ix => Some(ix.min(ws.tabs.len() - 1)),
+            other => other,
+        };
+    }
+
     fn resolve_dark(&self, cx: &Cx) -> bool {
         match self.config.appearance {
             Appearance::Light => false,
@@ -105,17 +238,16 @@ impl Madi {
         }
     }
 
-    /// The window heading: what is selected (bold) and where it lives (dim).
+    /// The window heading: what is open (bold) and where it lives (dim).
     pub fn title_parts(&self) -> (String, String) {
         let project = Self::project_name(&self.repo);
-        match self.workspace().and_then(|w| w.selected.as_ref()) {
-            Some(path) if !path.is_dir() => {
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let dir = path.strip_prefix(&self.repo).ok().and_then(|p| p.parent()).map(|d| d.display().to_string()).unwrap_or_default();
-                (name, if dir.is_empty() { project } else { format!("{project} · {dir}") })
+        match self.active_tab() {
+            Some(tab) => {
+                let dir = tab.path.strip_prefix(&self.repo).ok().and_then(|p| p.parent()).map(|d| d.display().to_string()).unwrap_or_default();
+                (tab.title.clone(), if dir.is_empty() { project } else { format!("{project} · {dir}") })
             }
-            _ if self.repo.is_empty() => ("Madi".into(), String::new()),
-            _ => (project, String::new()),
+            None if self.repo.is_empty() => ("Madi".into(), String::new()),
+            None => (project, String::new()),
         }
     }
 
@@ -152,24 +284,24 @@ impl Madi {
 
     fn topbar(&self, p: &Palette) -> El {
         let (name, place) = self.title_parts();
-        div()
-            .col()
-            .child(
-                div()
-                    .row()
-                    .items_center()
-                    .h(40.)
-                    .px(16.)
-                    .gap(12.)
-                    .bg(p.chrome)
-                    .child(text(name).text_color(p.text_strong))
-                    .child(text(place).text_size(12.).text_color(p.text_dim))
-                    .child(div().grow())
-                    .child(self.icon_button(p, self.focus_mode, icons::focus(if self.focus_mode { p.text_strong } else { p.text_dim }), |s, _| {
-                        s.focus_mode = !s.focus_mode
-                    })),
-            )
-            .child(div().h(1.).bg(p.border))
+        let mut bar = div()
+            .row()
+            .items_center()
+            .h(40.)
+            .px(16.)
+            .gap(12.)
+            .bg(p.chrome)
+            .child(text(name).text_color(p.text_strong))
+            .child(text(place).text_size(12.).text_color(p.text_dim));
+        if let Some(error) = &self.error {
+            bar = bar.child(text(error.clone()).text_size(12.).text_color(p.red));
+        }
+        let bar = bar
+            .child(div().grow())
+            .child(self.icon_button(p, self.focus_mode, icons::focus(if self.focus_mode { p.text_strong } else { p.text_dim }), |s, _| {
+                s.focus_mode = !s.focus_mode
+            }));
+        div().col().child(bar).child(div().h(1.).bg(p.border))
     }
 
     fn tree_row(&self, i: usize, p: &Palette) -> El {
@@ -183,10 +315,15 @@ impl Madi {
             .px(8.)
             .bg(if selected { p.selected } else { Color::TRANSPARENT })
             .hover_bg(p.selected)
-            .on_click(move |s: &mut Madi, _| {
+            .cursor(gyeol::Cursor::Pointer)
+            // A press does the work, so a double click can pin the file's preview tab.
+            .on_mouse_down(move |s: &mut Madi, _, e| {
+                s.focus = Focus::Tree;
                 s.select(path.clone());
                 if is_dir {
                     s.toggle_dir(&path);
+                } else {
+                    s.open_file(path.clone(), e.click_count < 2);
                 }
             })
             .child(div().w(row.depth as f32 * 14.))
@@ -234,21 +371,73 @@ impl Madi {
             .child(div().w(1.).bg(p.border))
     }
 
-    fn main_area(&self, p: &Palette) -> El {
-        div()
-            .grow()
-            .items_center()
-            .justify_center()
-            .gap(8.)
-            .child(text("Nothing open").text_size(15.).text_color(p.text))
-            .child(text("Pick a file in Files to edit it").text_size(12.).text_color(p.text_dim))
+    fn tab_bar(&self, p: &Palette) -> El {
+        let ws = self.workspace();
+        let active = ws.and_then(|w| w.active);
+        let tabs = ws.into_iter().flat_map(|w| w.tabs.iter().enumerate()).map(|(i, tab)| {
+            let dirty = tab.editor.doc.is_dirty();
+            let is_active = active == Some(i);
+            let title = text(tab.title.clone()).text_size(12.).text_color(if is_active { p.text_strong } else { p.text_dim });
+            let close = div()
+                .w(14.)
+                .items_center()
+                .rounded(4.)
+                .hover_bg(p.border)
+                .on_click(move |s: &mut Madi, _| s.close_tab(i))
+                .child(text(if dirty { "●" } else { "×" }).text_size(12.).text_color(if dirty { p.amber } else { p.text_dim }));
+            div()
+                .row()
+                .items_center()
+                .h(34.)
+                .px(12.)
+                .gap(8.)
+                .bg(if is_active { p.bg } else { Color::TRANSPARENT })
+                .hover_bg(if is_active { p.bg } else { p.selected })
+                .on_click(move |s: &mut Madi, _| s.activate_tab(i))
+                .child(if tab.preview { title.text_italic() } else { title })
+                .child(close)
+                .child(div().w(1.).bg(p.border))
+        });
+        div().col().child(div().row().h(34.).bg(p.chrome).children(tabs)).child(div().h(1.).bg(p.border))
+    }
+
+    fn main_area(&self, cx: &mut Cx, p: &Palette) -> El {
+        let content = match self.active_editor() {
+            Some(ed) => {
+                let focused = self.focus == Focus::Editor && self.window_focused;
+                let blink_on = (self.blink_epoch.elapsed().as_millis() / BLINK.as_millis()) % 2 == 0;
+                if focused {
+                    cx.request_redraw_after(Duration::from_millis((BLINK.as_millis() - self.blink_epoch.elapsed().as_millis() % BLINK.as_millis()) as u64));
+                }
+                editor::view(ed, cx, p, self.config.font_size(), focused && blink_on)
+            }
+            None => div()
+                .grow()
+                .items_center()
+                .justify_center()
+                .gap(8.)
+                .child(text("Nothing open").text_size(15.).text_color(p.text))
+                .child(text("Pick a file in Files to edit it").text_size(12.).text_color(p.text_dim)),
+        };
+        div().grow().child(self.tab_bar(p)).child(content)
     }
 
     fn status_bar(&self, p: &Palette) -> El {
-        div()
-            .col()
-            .child(div().h(1.).bg(p.border))
-            .child(div().row().items_center().h(27.).px(12.).bg(p.chrome).child(text(self.repo.clone()).text_size(12.).text_color(p.text_dim)))
+        let details = self.active_editor().map(|e| {
+            let (line, col) = e.doc.cursor_display();
+            format!("Ln {line}, Col {col}   {}   UTF-8", e.doc.line_ending())
+        });
+        div().col().child(div().h(1.).bg(p.border)).child(
+            div()
+                .row()
+                .items_center()
+                .h(27.)
+                .px(12.)
+                .bg(p.chrome)
+                .child(text(self.repo.clone()).text_size(12.).text_color(p.text_dim))
+                .child(div().grow())
+                .child(text(details.unwrap_or_default()).text_size(12.).text_color(p.text_dim)),
+        )
     }
 }
 
@@ -259,11 +448,18 @@ impl View for Madi {
         if !self.focus_mode {
             middle = middle.child(self.rail(&p)).child(div().w(1.).bg(p.border)).child(self.sidebar(cx, &p));
         }
-        let mut root = div().bg(p.bg).text_color(p.text).text_size(13.).child(self.topbar(&p)).child(middle.child(self.main_area(&p)));
+        let mut root = div().bg(p.bg).text_color(p.text).text_size(13.).child(self.topbar(&p)).child(middle.child(self.main_area(cx, &p)));
         if !self.focus_mode {
             root = root.child(self.status_bar(&p));
         }
         root
+    }
+
+    fn event(&mut self, event: &Event, cx: &mut Cx) {
+        match event {
+            Event::FocusChanged(focused) => self.window_focused = *focused,
+            _ => self.editor_event(event, cx),
+        }
     }
 }
 
@@ -271,6 +467,7 @@ impl View for Madi {
 mod tests {
     use super::*;
     use gyeol::testing::TestHost;
+    use crate::editor::Editor;
 
     /// A project with `src/main.rs`, `src/lib.rs` and `README.md` in a fresh temp folder.
     fn project(name: &str) -> (PathBuf, String) {
@@ -363,5 +560,182 @@ mod tests {
         host.state_mut().config.appearance = Appearance::Light;
         host.frame();
         assert_eq!(host.scene().quads().next().unwrap().background, light, "Light ignores a dark OS");
+    }
+
+    // ---- the editor ------------------------------------------------------------------------
+
+    use gyeol::{Ime, Key, Modifiers, NamedKey, Shaper};
+    use madi_text::Pos;
+
+    fn cmd() -> Modifiers {
+        // Both, so the platform's shortcut modifier is held whichever one it is.
+        Modifiers { logo: true, ctrl: true, ..Default::default() }
+    }
+
+    fn typed(host: &mut TestHost<Madi>, s: &str) {
+        for c in s.chars() {
+            host.key(Key::Char(c.to_string()), Some(&c.to_string()));
+        }
+    }
+
+    fn press(host: &mut TestHost<Madi>, key: Key) {
+        host.key(key, None);
+    }
+
+    fn doc_text(host: &TestHost<Madi>) -> String {
+        host.state().active_editor().unwrap().doc.text()
+    }
+
+    fn shortcut(host: &mut TestHost<Madi>, letter: &str) {
+        host.set_modifiers(cmd());
+        host.key(Key::Char(letter.into()), Some(letter));
+        host.set_modifiers(Modifiers::default());
+    }
+
+    #[test]
+    fn opening_a_file_shows_its_lines_in_a_preview_tab_that_double_click_pins() {
+        let (mut host, _, _) = app("open");
+        host.click_text("README.md");
+        assert!(has_text(&host, "# hi"), "the file's first line");
+        assert!(has_text(&host, "1"), "line numbers in the gutter");
+        let ws = host.state().workspace().unwrap();
+        assert_eq!((ws.tabs.len(), ws.tabs[0].preview), (1, true));
+
+        // "README.md" is now also the heading and the tab's title: take the one in the sidebar (left, below the top bar).
+        let row = host.scene().texts().find(|t| t.content == "README.md" && t.origin.0 < 330. && t.origin.1 > 100.).expect("the tree row");
+        let at = (row.origin.0 + 10., row.origin.1 + 6.);
+        host.mouse_down_n(at, 2);
+        host.mouse_up(at);
+        assert!(!host.state().workspace().unwrap().tabs[0].preview, "a double click keeps the tab");
+    }
+
+    #[test]
+    fn a_preview_tab_is_replaced_until_it_is_pinned_by_editing() {
+        let (mut host, _, _) = app("preview");
+        host.click_text("src");
+        host.click_text("lib.rs");
+        host.click_text("main.rs");
+        assert_eq!(host.state().workspace().unwrap().tabs.len(), 1, "the second preview replaced the first");
+        typed(&mut host, "x");
+        assert!(!host.state().workspace().unwrap().tabs[0].preview, "editing pins it");
+        host.click_text("lib.rs");
+        assert_eq!(host.state().workspace().unwrap().tabs.len(), 2, "so the next preview gets its own tab");
+    }
+
+    #[test]
+    fn typing_backspace_and_undo() {
+        let (mut host, _, _) = app("typing");
+        host.click_text("README.md");
+        typed(&mut host, "ab");
+        assert_eq!(doc_text(&host), "ab# hi\n");
+        press(&mut host, Key::Named(NamedKey::Backspace));
+        assert_eq!(doc_text(&host), "a# hi\n");
+        shortcut(&mut host, "z");
+        assert_eq!(doc_text(&host), "ab# hi\n", "undo brings the deleted character back");
+        host.set_modifiers(Modifiers { shift: true, ..cmd() });
+        host.key(Key::Char("Z".into()), Some("Z"));
+        assert_eq!(doc_text(&host), "a# hi\n", "shift + undo shortcut redoes");
+    }
+
+    #[test]
+    fn korean_composes_through_the_input_method() {
+        let (mut host, _, _) = app("ime");
+        host.click_text("README.md");
+        for step in ["ㅎ", "하", "한"] {
+            host.ime(Ime::Preedit { text: step.into(), cursor: None });
+            assert_eq!(doc_text(&host), format!("{step}# hi\n"), "composition replaces the previous provisional text");
+            assert!(host.state().active_editor().unwrap().doc.marked().is_some());
+        }
+        press(&mut host, Key::Named(NamedKey::Backspace));
+        assert_eq!(doc_text(&host), "한# hi\n", "keys belong to the input method while composing");
+
+        host.ime(Ime::Commit("한".into()));
+        assert_eq!(doc_text(&host), "한# hi\n");
+        assert!(host.state().active_editor().unwrap().doc.marked().is_none());
+        host.ime(Ime::Preedit { text: "ㄱ".into(), cursor: None });
+        host.ime(Ime::Preedit { text: "".into(), cursor: None });
+        assert_eq!(doc_text(&host), "한# hi\n", "cancelling a composition leaves nothing behind");
+    }
+
+    #[test]
+    fn saving_writes_the_file_and_clears_the_unsaved_marker() {
+        let (mut host, _, path) = app("save");
+        host.click_text("README.md");
+        typed(&mut host, "x");
+        assert!(has_text(&host, "●"), "unsaved changes are marked on the tab");
+        shortcut(&mut host, "s");
+        assert_eq!(std::fs::read_to_string(Path::new(&path).join("README.md")).unwrap(), "x# hi\n");
+        assert!(!has_text(&host, "●") && has_text(&host, "×"));
+    }
+
+    #[test]
+    fn a_tab_with_unsaved_changes_refuses_to_close() {
+        let (mut host, _, _) = app("close");
+        host.click_text("README.md");
+        typed(&mut host, "x");
+        host.click_text("●");
+        assert_eq!(host.state().workspace().unwrap().tabs.len(), 1);
+        assert!(host.state().error.as_deref().unwrap_or("").contains("unsaved"), "{:?}", host.state().error);
+        shortcut(&mut host, "s");
+        host.click_text("×");
+        assert!(host.state().workspace().unwrap().tabs.is_empty(), "closes once saved");
+    }
+
+    fn position(host: &TestHost<Madi>, line: &str, col: usize) -> (f32, f32) {
+        let t = host.scene().texts().find(|t| t.content == line).expect("the line is on screen");
+        let size = host.state().config.font_size();
+        let x = Shaper::new().caret_x(line, Editor::text_style(size), col);
+        (t.origin.0 + x + 0.5, t.origin.1 + 4.)
+    }
+
+    #[test]
+    fn the_mouse_places_the_caret_drags_a_selection_and_double_click_picks_a_word() {
+        let (mut host, _, _) = app("mouse");
+        host.click_text("src");
+        host.click_text("main.rs");
+        let line = "fn main() {}";
+        host.click(position(&host, line, 3));
+        assert_eq!(host.state().active_editor().unwrap().doc.cursor(), Pos::new(0, 3));
+
+        host.mouse_down(position(&host, line, 3));
+        host.mouse_move(position(&host, line, 7));
+        host.mouse_up(position(&host, line, 7));
+        assert_eq!(host.state().active_editor().unwrap().doc.selected_text(), "main");
+
+        host.mouse_down_n(position(&host, line, 4), 2);
+        host.mouse_up(position(&host, line, 4));
+        assert_eq!(host.state().active_editor().unwrap().doc.selected_text(), "main", "double click selects the word");
+        typed(&mut host, "X");
+        assert_eq!(doc_text(&host), "fn X() {}\n", "typing replaces the selection");
+    }
+
+    #[test]
+    fn select_all_copy_cut_and_paste_use_the_clipboard() {
+        let (mut host, _, _) = app("clip");
+        host.click_text("README.md");
+        shortcut(&mut host, "a");
+        shortcut(&mut host, "c");
+        assert_eq!(host.clipboard().as_deref(), Some("# hi\n"));
+        shortcut(&mut host, "x");
+        assert_eq!(doc_text(&host), "");
+        host.set_clipboard("pasted");
+        shortcut(&mut host, "v");
+        assert_eq!(doc_text(&host), "pasted");
+    }
+
+    #[test]
+    fn the_caret_is_scrolled_into_view() {
+        let (mut host, _, path) = app("reveal");
+        let long = (0..200).map(|i| format!("line {i}\n")).collect::<String>();
+        let file = Path::new(&path).join("long.txt");
+        std::fs::write(&file, long).unwrap();
+        host.state_mut().refresh_tree();
+        host.frame();
+        host.click_text("long.txt");
+        assert_eq!(host.scroll_offset(("editor-lines", &file)).1, 0.);
+        host.set_modifiers(Modifiers { logo: true, ctrl: true, ..Default::default() });
+        press(&mut host, Key::Named(NamedKey::ArrowDown));
+        assert!(host.scroll_offset(("editor-lines", &file)).1 > 1000., "jumping to the end scrolls the last line into view");
+        assert!(has_text(&host, "line 199"));
     }
 }

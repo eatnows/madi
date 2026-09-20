@@ -11,3 +11,4 @@ path = "src/main.rs"
 [dependencies]
 gyeol = { path = "../../../gyeol" }
 madi-project = { path = "../project" }
+madi-text = { path = "../text" }
