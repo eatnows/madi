@@ -10,13 +10,13 @@ use gpui::{
     div, prelude::*, px, uniform_list, ClickEvent, Context, EventEmitter, FocusHandle, IntoElement,
     MouseMoveEvent, Pixels, Point, ScrollHandle, ScrollStrategy, UniformListScrollHandle, Window,
 };
-use maditor_git::{
+use madi_git::{
     diff::{self, FileDiff},
     diff_layout::DiffLayout,
     git_log::{self, CommitInfo},
     graph::{compute_rows, GraphRow},
 };
-use maditor_ui::{
+use madi_ui::{
     diff_view::diff_view,
     file_row::file_row,
     resize,

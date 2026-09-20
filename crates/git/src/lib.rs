@@ -1,4 +1,4 @@
-//! Git logic shared by every part of Maditor: worktrees, diffs, history, and the shapes derived
+//! Git logic shared by every part of Madi: worktrees, diffs, history, and the shapes derived
 //! from them (graph lanes, diff layouts, branch lists). No UI dependency.
 pub mod branches;
 pub mod diff;

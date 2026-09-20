@@ -10,20 +10,20 @@ fn main() {
 
     Application::new().run(move |cx: &mut App| {
         app::bind_keys(cx);
-        maditor_ui::text_input::bind_keys(cx);
-        maditor_editor::bind_keys(cx);
+        madi_ui::text_input::bind_keys(cx);
+        madi_editor::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1360.), px(820.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Maditor".into()),
+                    title: Some("Madi".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| app::Maditor::new(initial, maditor_project::config::Config::load(), window, cx));
+                let view = cx.new(|cx| app::Madi::new(initial, madi_project::config::Config::load(), window, cx));
                 // Repaint when the OS switches between light and dark (used by the "Auto" setting).
                 let observed = view.clone();
                 window

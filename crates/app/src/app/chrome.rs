@@ -2,19 +2,19 @@
 //! what's open).
 use gpui::{div, prelude::*, px, Context, IntoElement};
 
-use super::{workspace::{TabBody, TabKey}, Maditor};
-use maditor_ui::theme::*;
+use super::{workspace::{TabBody, TabKey}, Madi};
+use madi_ui::theme::*;
 
-impl Maditor {
-    /// `maditor / project / path/of/the/active/file`.
+impl Madi {
+    /// `madi / project / path/of/the/active/file`.
     fn breadcrumb(&self) -> String {
         if self.repo.is_empty() {
             return match self.active_tab().map(|t| &t.key) {
-                Some(TabKey::File(path)) => format!("maditor / {}", path.display()),
-                _ => "maditor".into(),
+                Some(TabKey::File(path)) => format!("madi / {}", path.display()),
+                _ => "madi".into(),
             };
         }
-        let mut crumb = format!("maditor / {}", Self::project_name(&self.repo));
+        let mut crumb = format!("madi / {}", Self::project_name(&self.repo));
         match self.active_tab().map(|t| (&t.key, &t.title)) {
             Some((TabKey::File(path), _)) => {
                 let rel = path.strip_prefix(&self.repo).unwrap_or(path).to_string_lossy().into_owned();

@@ -1,12 +1,12 @@
 //! Worktrees of the open project: selecting one (which loads its changes), changing its pinned
 //! base branch, removing it, and keyboard navigation through worktrees and their changed files.
 use gpui::{prelude::*, Context};
-use maditor_git::{diff, worktree::{self, WorktreeInfo}};
-use maditor_ui::scroll::scroll_to_top;
+use madi_git::{diff, worktree::{self, WorktreeInfo}};
+use madi_ui::scroll::scroll_to_top;
 
-use super::{FileItem, Maditor};
+use super::{FileItem, Madi};
 
-impl Maditor {
+impl Madi {
     /// While the git panel follows the selected worktree it shows that worktree's branch (or the
     /// default branch when only a project is selected).
     pub(super) fn sync_graph_branch(&mut self, cx: &mut Context<Self>) {

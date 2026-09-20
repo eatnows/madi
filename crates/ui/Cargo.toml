@@ -1,9 +1,9 @@
 [package]
-name = "maditor-ui"
+name = "madi-ui"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 gpui = "0.2.2"
-maditor-git = { path = "../git" }
+madi-git = { path = "../git" }
 unicode-segmentation = "1"

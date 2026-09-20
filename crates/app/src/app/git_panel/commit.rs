@@ -1,6 +1,6 @@
 //! The selected commit's message box beneath the graph.
 use gpui::{div, prelude::*, px, Context, IntoElement};
-use maditor_ui::{scroll::axis_locked, theme::*};
+use madi_ui::{scroll::axis_locked, theme::*};
 
 use super::GitPanel;
 

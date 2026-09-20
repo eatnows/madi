@@ -146,7 +146,7 @@ mod tests {
         let repo_root = env!("CARGO_MANIFEST_DIR").to_string() + "/../..";
         assert_eq!(check_repo(repo_root), RepoStatus::Ok);
 
-        let plain = std::env::temp_dir().join("maditor-check-repo-plain-dir");
+        let plain = std::env::temp_dir().join("madi-check-repo-plain-dir");
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(check_repo(plain.to_string_lossy().into_owned()), RepoStatus::NotARepo);
         std::fs::remove_dir(&plain).unwrap();

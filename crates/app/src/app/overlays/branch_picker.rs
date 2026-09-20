@@ -6,10 +6,10 @@ use gpui::{
     div, prelude::*, px, App, Context, Entity, Focusable, IntoElement, MouseButton, Pixels, Point,
     Subscription, Window,
 };
-use maditor_git::branches::{self, BranchRow};
-use maditor_ui::{scroll::axis_locked, text_input::TextInput, theme::*};
+use madi_git::branches::{self, BranchRow};
+use madi_ui::{scroll::axis_locked, text_input::TextInput, theme::*};
 
-use crate::app::{Maditor, PickerCancel, PickerConfirm, SelectNext, SelectPrev};
+use crate::app::{Madi, PickerCancel, PickerConfirm, SelectNext, SelectPrev};
 
 const WIDTH: f32 = 260.0;
 const LIST_MAX_H: f32 = 300.0;
@@ -33,7 +33,7 @@ pub(crate) struct BranchPickerState {
     _subscription: Subscription,
 }
 
-impl Maditor {
+impl Madi {
     pub(crate) fn open_picker(&mut self, target: PickerTarget, anchor: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| TextInput::new("Search branches", cx));
         window.focus(&input.focus_handle(cx));

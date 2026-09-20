@@ -12,15 +12,15 @@ use gpui::{
     Subscription, UniformListScrollHandle, Window,
 };
 
-use maditor_git::diff_layout::DiffLayout;
-use maditor_project::tree::{build_tree_rows, TreeRow};
+use madi_git::diff_layout::DiffLayout;
+use madi_project::tree::{build_tree_rows, TreeRow};
 
 use super::{
-    Confirm, ConfirmAction, Maditor, SelectNext, SelectPrev, TreeCollapse, TreeEnter, TreeExpand,
+    Confirm, ConfirmAction, Madi, SelectNext, SelectPrev, TreeCollapse, TreeEnter, TreeExpand,
 };
-use maditor_ui::{diff_view::diff_view, scroll::axis_locked, theme::*};
+use madi_ui::{diff_view::diff_view, scroll::axis_locked, theme::*};
 
-use maditor_editor::{Editor, EditorEvent};
+use madi_editor::{Editor, EditorEvent};
 
 /// Files bigger than this aren't opened (the view isn't built for huge buffers yet).
 const MAX_OPEN_BYTES: u64 = 2 * 1024 * 1024;
@@ -64,7 +64,7 @@ pub(super) struct Workspace {
     pub selected: Option<PathBuf>,
 }
 
-impl Maditor {
+impl Madi {
     pub(super) fn workspace(&self) -> Option<&Workspace> {
         self.workspaces.get(&self.repo)
     }

@@ -5,7 +5,7 @@ use gpui::{
     div, prelude::*, px, uniform_list, AnyElement, ElementId, HighlightStyle, IntoElement, Rgba,
     ScrollHandle, SharedString, StyledText, UniformListScrollHandle,
 };
-use maditor_git::diff_layout::{Cell, DiffLayout, Row, UnifiedRow};
+use madi_git::diff_layout::{Cell, DiffLayout, Row, UnifiedRow};
 
 use crate::{scroll::axis_locked, theme::*};
 

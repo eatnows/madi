@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use gpui::{prelude::*, Context, PathPromptOptions, Window};
-use maditor_project::scan::{scan_repo, ScanOutcome};
+use madi_project::scan::{scan_repo, ScanOutcome};
 
-use super::{Confirm, ConfirmAction, Maditor, SidebarView};
+use super::{Confirm, ConfirmAction, Madi, SidebarView};
 
-impl Maditor {
+impl Madi {
     pub(super) fn open_project(&mut self, path: String, cx: &mut Context<Self>) {
         if !self.config.projects.contains(&path) {
             self.config.projects.push(path.clone());

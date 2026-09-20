@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn lists_folders_first_hides_git_and_expands_lazily() {
-        let proj = std::env::temp_dir().join("maditor-project-test-tree");
+        let proj = std::env::temp_dir().join("madi-project-test-tree");
         let _ = std::fs::remove_dir_all(&proj);
         std::fs::create_dir_all(proj.join("src/nested")).unwrap();
         std::fs::create_dir_all(proj.join(".git")).unwrap();

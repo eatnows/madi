@@ -17,22 +17,22 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollHandle, SharedString,
     Subscription, Window,
 };
-use maditor_git::{
+use madi_git::{
     diff::FileDiff,
     worktree::WorktreeInfo,
 };
 
-use maditor_project::{
+use madi_project::{
     config::{Appearance, Config},
     scan::Issue,
     tree::TreeRow,
 };
 
-use maditor_ui::theme::*;
+use madi_ui::theme::*;
 
 use overlays::{BranchPickerState, Confirm, ConfirmAction, MenuTarget, PickerTarget};
 
-actions!(maditor, [SelectPrev, SelectNext, PickerConfirm, PickerCancel, ModalCancel, TreeEnter, TreeExpand, TreeCollapse]);
+actions!(madi, [SelectPrev, SelectNext, PickerConfirm, PickerCancel, ModalCancel, TreeEnter, TreeExpand, TreeCollapse]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -72,7 +72,7 @@ enum FileItem {
     File(usize),
 }
 
-pub struct Maditor {
+pub struct Madi {
     config: Config,
     repo: String,
     issue: Option<Issue>,
@@ -108,7 +108,7 @@ pub struct Maditor {
     _git_panel_events: Subscription,
 }
 
-impl Maditor {
+impl Madi {
     pub fn new(initial: Option<String>, config: Config, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let git_panel = cx.new(|cx| GitPanel::new(cx));
         let git_panel_events = cx.subscribe_in(&git_panel, window, |this, _, event: &GitPanelEvent, window, cx| match event {
@@ -268,7 +268,7 @@ fn empty(message: impl Into<SharedString>) -> impl IntoElement {
     div().flex_1().flex().items_center().justify_center().text_color(TEXT_DIM()).child(message.into())
 }
 
-impl Maditor {
+impl Madi {
     /// Everything right of the project rail: the sidebar and the editor area.
     fn main_area(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         let row = || div().flex_1().min_w_0().flex();
@@ -308,7 +308,7 @@ impl Maditor {
         let editor_width = viewport_w - 48. - self.sidebar_width - 5.;
         row()
             .child(self.sidebar(cx))
-            .child(maditor_ui::resize::handle("rz-sidebar", true, cx.listener(|this, ev: &MouseDownEvent, _, _| {
+            .child(madi_ui::resize::handle("rz-sidebar", true, cx.listener(|this, ev: &MouseDownEvent, _, _| {
                 this.dragging = Some((Resize::Sidebar, f32::from(ev.position.x)));
             })))
             .child(self.editor_area(editor_width, cx))
@@ -316,7 +316,7 @@ impl Maditor {
     }
 }
 
-impl Maditor {
+impl Madi {
     /// Window-wide mouse moves drive whichever divider is being dragged (the sidebar's here, the
     /// git panel's own in the panel).
     fn on_mouse_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
@@ -337,9 +337,9 @@ impl Maditor {
     }
 }
 
-impl Render for Maditor {
+impl Render for Madi {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        maditor_ui::theme::set_dark(self.resolve_dark(window));
+        madi_ui::theme::set_dark(self.resolve_dark(window));
         let repo_ok = !self.repo.is_empty() && self.issue.is_none();
         let viewport_w = f32::from(window.viewport_size().width);
         div()

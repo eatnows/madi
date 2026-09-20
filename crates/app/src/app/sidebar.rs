@@ -1,12 +1,12 @@
 //! The sidebar: the project's files, or its git worktrees with the changes of the selected one.
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent};
 
-use super::{FileItem, Maditor, MenuTarget, PickerTarget, SelectNext, SelectPrev, SidebarView};
-use maditor_project::scan::Issue;
+use super::{FileItem, Madi, MenuTarget, PickerTarget, SelectNext, SelectPrev, SidebarView};
+use madi_project::scan::Issue;
 
-use maditor_ui::{file_row::file_row, scroll::axis_locked, theme::*};
+use madi_ui::{file_row::file_row, scroll::axis_locked, theme::*};
 
-impl Maditor {
+impl Madi {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let seg = |id: &'static str, label: &'static str, view: SidebarView, cx: &mut Context<Self>| {
             let active = self.sidebar_view == view;

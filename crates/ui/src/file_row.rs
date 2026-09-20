@@ -1,6 +1,6 @@
 //! One changed-file row (status letter, path, +/- counts); the caller adds the click handler.
 use gpui::{div, prelude::*, px};
-use maditor_git::diff::FileDiff;
+use madi_git::diff::FileDiff;
 
 use crate::theme::*;
 

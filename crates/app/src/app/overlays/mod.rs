@@ -5,9 +5,9 @@ mod branch_picker;
 pub(crate) use branch_picker::{BranchPickerState, PickerTarget};
 
 use gpui::{div, prelude::*, px, Context, IntoElement, MouseButton, Window};
-use maditor_ui::theme::*;
+use madi_ui::theme::*;
 
-use crate::app::{Maditor, ModalCancel};
+use crate::app::{Madi, ModalCancel};
 
 pub(crate) enum MenuTarget {
     Project(String),
@@ -30,7 +30,7 @@ pub(crate) struct Confirm {
     pub action: ConfirmAction,
 }
 
-impl Maditor {
+impl Madi {
     pub(crate) fn context_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let (pos, target) = self.menu.as_ref()?;
         let (label, danger) = match target {

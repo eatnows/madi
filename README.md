@@ -1,4 +1,4 @@
-# Maditor
+# Madi
 
 A native (Rust + [GPUI](https://www.gpui.rs)) code editor built around git worktrees: edit files,
 and review what each worktree changed against its base branch without leaving the editor.
@@ -21,7 +21,7 @@ no UI dependency, reusable UI pieces, views, and the app that assembles them):
 | `crates/project` | settings, repo scan, lazily expanded file tree | no |
 | `crates/ui` | theme, scroll helpers, IME text input, diff drawing, small widgets | yes |
 | `crates/editor` | the editor view, a thin layer over `text::Document` | yes |
-| `crates/app` | the `maditor` binary: workspace/tabs, sidebar, git panel, overlays, chrome | yes |
+| `crates/app` | the `madi` binary: workspace/tabs, sidebar, git panel, overlays, chrome | yes |
 
 Logic lives in the crates without gpui, so it is tested without a window; the app's tests drive
 real keystrokes, wheel events and repos through GPUI's test harness.
@@ -29,7 +29,7 @@ real keystrokes, wheel events and repos through GPUI's test harness.
 ## Run
 
 ```sh
-cargo run -p maditor -- /path/to/a/repo   # the argument is optional; projects are remembered
+cargo run -p madi -- /path/to/a/repo   # a folder (remembered as a project) or a single file; optional
 cargo test --workspace
 ```
 

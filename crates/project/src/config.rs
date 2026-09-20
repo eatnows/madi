@@ -49,14 +49,14 @@ pub struct Config {
 
 fn config_path() -> Option<PathBuf> {
     let dir = if cfg!(target_os = "macos") {
-        PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/maditor")
+        PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/madi")
     } else if cfg!(target_os = "windows") {
-        PathBuf::from(std::env::var_os("APPDATA")?).join("maditor")
+        PathBuf::from(std::env::var_os("APPDATA")?).join("madi")
     } else {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?
-            .join("maditor")
+            .join("madi")
     };
     Some(dir.join("config.json"))
 }
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn a_partial_config_keeps_the_fields_it_has() {
-        let dir = std::env::temp_dir().join("maditor-native-test-config");
+        let dir = std::env::temp_dir().join("madi-test-config");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("partial.json");
         std::fs::write(&path, r#"{"projects":["/a","/b"],"appearance":"dark"}"#).unwrap();

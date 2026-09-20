@@ -3,8 +3,8 @@ use gpui::{
     canvas, div, fill, point, prelude::*, px, size, Bounds, ClickEvent, Context, Corners, Hsla,
     IntoElement, PathBuilder, Window,
 };
-use maditor_git::{graph::GraphRow, time::relative as relative_time};
-use maditor_ui::theme::*;
+use madi_git::{graph::GraphRow, time::relative as relative_time};
+use madi_ui::theme::*;
 
 use super::{GitPanel, GRAPH_MIN_W};
 

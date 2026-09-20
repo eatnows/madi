@@ -1,12 +1,12 @@
 //! Harness tests for the app: real repos, real keystrokes, wheel events.
 use super::*;
 use gpui::{Entity, TestAppContext};
-use maditor_git::branches::BranchRow;
+use madi_git::branches::BranchRow;
 
 use super::git_panel::GitPanel;
 
 /// The git panel's state, read from the app (it is a view of its own).
-fn g<'a>(m: &'a Maditor, cx: &'a gpui::App) -> &'a GitPanel {
+fn g<'a>(m: &'a Madi, cx: &'a gpui::App) -> &'a GitPanel {
     m.git_panel.read(cx)
 }
 
@@ -15,7 +15,7 @@ const GRAPH_MIN_WIDTH_FOR_TEST: f32 = 820.0 - 400.0;
 use std::{path::Path, process::Command};
 
 /// The active tab's diff data, if it is a diff.
-fn active_diff(m: &Maditor) -> Option<&workspace::DiffTab> {
+fn active_diff(m: &Madi) -> Option<&workspace::DiffTab> {
     match &m.active_tab()?.body {
         workspace::TabBody::Diff(d) => Some(d),
         _ => None,
@@ -29,7 +29,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// A repo with `main` plus a linked worktree `wt` (branch feature) that edits one file.
 fn fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("maditor-native-test-{name}"));
+    let root = std::env::temp_dir().join(format!("madi-test-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -57,7 +57,7 @@ fn scans_a_repo_and_loads_a_worktree_diff(cx: &mut TestAppContext) {
     let (root, repo) = fixture("scan");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
 
     view.read_with(cx, |m, _| {
@@ -92,7 +92,7 @@ fn arrow_navigation_clamps_at_both_ends(cx: &mut TestAppContext) {
     let (root, repo) = fixture("nav");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
 
     view.update(cx, |m, cx| m.move_worktree(1, cx));
@@ -124,7 +124,7 @@ fn picking_a_base_branch_pins_it_and_refreshes_ahead_behind(cx: &mut TestAppCont
     let (root, repo) = fixture("pick");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
 
     let (wt_ix, wt_path) = view.read_with(cx, |m, _| {
@@ -163,7 +163,7 @@ fn graph_follows_the_worktree_until_pinned(cx: &mut TestAppContext) {
     let (root, repo) = fixture("graph");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
 
     view.read_with(cx, |m, cx| {
@@ -205,7 +205,7 @@ fn selecting_a_commit_loads_its_files_and_reclicking_deselects(cx: &mut TestAppC
     let (root, repo) = fixture("commit");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
     let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
     view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
@@ -238,7 +238,7 @@ fn removing_a_worktree_keeps_the_other_selection_and_drops_its_pin(cx: &mut Test
     let (root, repo) = fixture("remove");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
 
     let (main_ix, wt_path) = view.read_with(cx, |m, _| {
@@ -269,7 +269,7 @@ fn removing_the_selected_worktree_clears_its_diff(cx: &mut TestAppContext) {
     let (root, repo) = fixture("remove-selected");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
     let (wt_ix, wt_path) = view.read_with(cx, |m, _| {
         let ix = m.worktrees.iter().position(|w| !w.is_main).unwrap();
@@ -298,7 +298,7 @@ fn vertical_wheel_over_the_graph_scrolls_the_list_not_sideways(cx: &mut TestAppC
     }
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
     view.update(cx, |m, cx| {
         m.git_open = true;
@@ -330,7 +330,7 @@ fn vertical_wheel_over_the_graph_scrolls_the_list_not_sideways(cx: &mut TestAppC
 fn graph_with_overflow<'a>(
     name: &str,
     cx: &'a mut TestAppContext,
-) -> (Entity<Maditor>, &'a mut gpui::VisualTestContext, gpui::Point<Pixels>) {
+) -> (Entity<Madi>, &'a mut gpui::VisualTestContext, gpui::Point<Pixels>) {
     let (root, repo) = fixture(name);
     for i in 0..40 {
         std::fs::write(repo.join("a.txt"), format!("rev {i}\n")).unwrap();
@@ -338,7 +338,7 @@ fn graph_with_overflow<'a>(
     }
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
     view.update(cx, |m, cx| {
         m.git_open = true;
@@ -396,7 +396,7 @@ fn diff_tab_scrolls_both_ways_independently_and_keeps_its_position_per_tab(cx: &
 
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
     let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
     view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
@@ -413,7 +413,7 @@ fn diff_tab_scrolls_both_ways_independently_and_keeps_its_position_per_tab(cx: &
             (d.hscroll.offset(), d.vscroll.0.borrow().base_handle.offset())
         })
     };
-    assert!(view.read_with(cx, |m, _| maditor_ui::diff_view::width(&active_diff(m).unwrap().data, false)) > 1400., "content is wider than the pane");
+    assert!(view.read_with(cx, |m, _| madi_ui::diff_view::width(&active_diff(m).unwrap().data, false)) > 1400., "content is wider than the pane");
 
     wheel(cx, over_diff, -300., 0.);
     let (side, list) = offsets(cx);
@@ -443,11 +443,11 @@ fn diff_tab_scrolls_both_ways_independently_and_keeps_its_position_per_tab(cx: &
 
 #[gpui::test]
 fn appearance_cycles_persists_and_resolves_light_or_dark(cx: &mut TestAppContext) {
-    let root = std::env::temp_dir().join("maditor-native-test-appearance");
+    let root = std::env::temp_dir().join("madi-test-appearance");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(None, config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(None, config, window, cx));
     // (The palette itself is a process-wide switch that parallel tests also flip on render,
     // so assert on what this view resolves rather than on the global.)
     let resolves_dark = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |m, window, _| m.resolve_dark(window));
@@ -469,11 +469,11 @@ fn appearance_cycles_persists_and_resolves_light_or_dark(cx: &mut TestAppContext
 #[gpui::test]
 fn narrow_panes_switch_the_diff_to_unified(cx: &mut TestAppContext) {
     // The threshold is what decides the layout; the pane math feeds it the available width.
-    assert!(maditor_ui::diff_view::SPLIT_MIN_WIDTH > 500.);
+    assert!(madi_ui::diff_view::SPLIT_MIN_WIDTH > 500.);
     let (root, repo) = fixture("responsive");
     let path = repo.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path), config, window, cx));
     cx.run_until_parked();
     let wt_ix = view.read_with(cx, |m, _| m.worktrees.iter().position(|w| !w.is_main).unwrap());
     view.update(cx, |m, cx| m.select_worktree(wt_ix, cx));
@@ -488,7 +488,7 @@ fn narrow_panes_switch_the_diff_to_unified(cx: &mut TestAppContext) {
 }
 
 fn project_with_files(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("maditor-native-test-{name}"));
+    let root = std::env::temp_dir().join(format!("madi-test-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let proj = root.join("proj");
     std::fs::create_dir_all(proj.join("src/nested")).unwrap();
@@ -502,11 +502,11 @@ fn project_with_files(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
 
 #[gpui::test]
 fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut TestAppContext) {
-    cx.update(|cx| maditor_editor::bind_keys(cx));
+    cx.update(|cx| madi_editor::bind_keys(cx));
     let (root, proj) = project_with_files("edit");
     let path = proj.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
 
     // A folder without .git is editor-only: it lands in Edit mode with its tree loaded.
@@ -549,11 +549,11 @@ fn edit_mode_opens_edits_and_saves_a_file_and_guards_unsaved_closes(cx: &mut Tes
 
 #[gpui::test]
 fn preview_tabs_are_replaced_until_pinned_by_editing_or_reopening(cx: &mut TestAppContext) {
-    cx.update(|cx| maditor_editor::bind_keys(cx));
+    cx.update(|cx| madi_editor::bind_keys(cx));
     let (root, proj) = project_with_files("preview");
     let path = proj.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
     let tabs = |cx: &mut gpui::VisualTestContext| {
         view.read_with(cx, |m, _| {
@@ -586,7 +586,7 @@ fn opening_a_binary_file_reports_it_instead_of_a_tab(cx: &mut TestAppContext) {
     let (root, proj) = project_with_files("binary");
     let path = proj.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
     view.update_in(cx, |m, window, cx| m.open_file(proj.join("zeta.bin"), false, window, cx));
     view.read_with(cx, |m, _| {
@@ -597,12 +597,12 @@ fn opening_a_binary_file_reports_it_instead_of_a_tab(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn closing_a_project_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
-    cx.update(|cx| maditor_editor::bind_keys(cx));
+    cx.update(|cx| madi_editor::bind_keys(cx));
     let (root, proj) = project_with_files("close-dirty");
     std::fs::remove_dir_all(proj.join(".git")).unwrap();
     let path = proj.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
     view.update_in(cx, |m, window, cx| m.open_file(proj.join("README.md"), false, window, cx));
     cx.simulate_input("!");
@@ -621,13 +621,13 @@ fn closing_a_project_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn non_git_folder_reports_why_and_can_be_closed(cx: &mut TestAppContext) {
-    let root = std::env::temp_dir().join("maditor-native-test-plain");
+    let root = std::env::temp_dir().join("madi-test-plain");
     let _ = std::fs::remove_dir_all(&root);
     let plain = root.join("plain");
     std::fs::create_dir_all(&plain).unwrap();
     let path = plain.to_string_lossy().into_owned();
     let config = config_in(&root);
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(path.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
     cx.run_until_parked();
 
     view.read_with(cx, |m, _| {
@@ -652,7 +652,7 @@ fn a_file_opens_without_a_project_and_never_joins_the_project_list(cx: &mut Test
     std::fs::write(&note, "# hi\n").unwrap();
     let config = config_in(&root);
     let file = note.to_string_lossy().into_owned();
-    let (view, cx) = cx.add_window_view(|window, cx| Maditor::new(Some(file.clone()), config, window, cx));
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(file.clone()), config, window, cx));
     cx.run_until_parked();
 
     view.read_with(cx, |m, _| {

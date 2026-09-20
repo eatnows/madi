@@ -12,8 +12,8 @@ use gpui::{
     UniformListScrollHandle, Window,
 };
 
-use maditor_text::{Document, Pos};
-use maditor_ui::theme::*;
+use madi_text::{Document, Pos};
+use madi_ui::theme::*;
 
 actions!(
     editor,
@@ -700,7 +700,7 @@ mod tests {
 
     #[gpui::test]
     fn undo_redo_and_save_round_trip_with_crlf_preserved(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join("maditor-native-test-editor");
+        let dir = std::env::temp_dir().join("madi-test-editor");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f.txt");
         std::fs::write(&path, "one\r\ntwo\r\n").unwrap();

@@ -2,7 +2,7 @@
 //! branch pinned (defaulting to `main`). Runs off the UI thread, so it is plain blocking code.
 use std::collections::HashMap;
 
-use maditor_git::worktree::{self, RepoStatus, WorktreeInfo};
+use madi_git::worktree::{self, RepoStatus, WorktreeInfo};
 
 /// Why a registered folder can't be used as a git project.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn scans_worktrees_and_pins_new_ones_to_main_but_keeps_existing_pins() {
-        let root = std::env::temp_dir().join("maditor-project-test-scan");
+        let root = std::env::temp_dir().join("madi-project-test-scan");
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn reports_a_plain_folder_and_a_missing_one() {
-        let dir = std::env::temp_dir().join("maditor-project-test-plain");
+        let dir = std::env::temp_dir().join("madi-project-test-plain");
         std::fs::create_dir_all(&dir).unwrap();
         let outcome = |p: &Path| match scan_repo(p.to_string_lossy().into_owned(), HashMap::new()).unwrap() {
             ScanOutcome::Issue(i) => i,

@@ -1,12 +1,12 @@
 [package]
-name = "maditor-editor"
+name = "madi-editor"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 gpui = "0.2.2"
-maditor-text = { path = "../text" }
-maditor-ui = { path = "../ui" }
+madi-text = { path = "../text" }
+madi-ui = { path = "../ui" }
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
