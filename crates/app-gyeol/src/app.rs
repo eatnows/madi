@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gyeol::{div, text, uniform_list, Color, Cx, Element, Event, NamedKey, SystemTheme, View};
+use gyeol::{div, paths, text, uniform_list, Color, Cx, Element, Event, NamedKey, Path as DrawPath, SystemTheme, View};
 use madi_git::{diff::{self, FileDiff}, git_log::{self, CommitInfo}, graph::{compute_rows, GraphRow}, time, worktree::WorktreeInfo};
 use madi_project::{
     config::{Appearance, Config},
@@ -784,11 +784,28 @@ impl Madi {
             let row = &self.graph_rows[i];
             let lane_x = 10. + row.lane as f32 * 16.;
             let colors = [p.amber, p.green, p.red, p.text_dim];
-            let mut lanes = div().w((row.max_lane + 1) as f32 * 16. + 12.).h(32.);
-            for lane in row.pass_through.iter().copied().chain(row.continues.then_some(row.lane)) {
-                lanes = lanes.child(div().absolute().left(10. + lane as f32 * 16.).top(0.).w(2.).h(32.).bg(colors[lane % 4]));
+            let lane = |lane: usize| 10. + lane as f32 * 16.;
+            let stroke = |lane: usize| DrawPath::stroke(colors[lane % colors.len()], 2.);
+            let mut graph_paths = Vec::new();
+            for other in &row.pass_through {
+                let x = lane(*other);
+                graph_paths.push(stroke(*other).move_to(x, 0.).line_to(x, 32.));
             }
-            lanes = lanes.child(div().absolute().left(lane_x - 4.).top(12.).size(10.).rounded(5.).bg(colors[row.lane % 4]));
+            graph_paths.push(stroke(row.lane).move_to(lane_x, 0.).line_to(lane_x, 16.));
+            if row.continues {
+                graph_paths.push(stroke(row.lane).move_to(lane_x, 16.).line_to(lane_x, 32.));
+            }
+            for other in &row.converge_from {
+                let from = lane(*other);
+                graph_paths.push(stroke(*other).move_to(from, 0.).cubic_to(from, 9., lane_x, 7., lane_x, 16.));
+            }
+            for other in &row.diverge_to {
+                let to = lane(*other);
+                graph_paths.push(stroke(*other).move_to(lane_x, 16.).cubic_to(lane_x, 25., to, 23., to, 32.));
+            }
+            let lanes = div().w((row.max_lane + 1) as f32 * 16. + 12.).h(32.)
+                .child(paths(graph_paths).inset(0.))
+                .child(div().absolute().left(lane_x - 4.).top(12.).size(10.).rounded(5.).bg(colors[row.lane % 4]));
             div().row().items_center().h(32.).px(12.).gap(10.).min_w(760.).bg(if self.graph_selected == Some(i) { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.select_graph_commit(i))
                 .child(lanes)
                 .child(text(commit.summary.clone()).text_size(12.).text_color(p.text_strong).grow())
@@ -1292,6 +1309,7 @@ mod tests {
         let mut host = TestHost::new(Madi::new(Some(repo.to_string_lossy().into_owned()), config), (1000., 700.));
         host.click_text("Graph");
         assert!(host.state().git_graph_open && !host.state().graph_commits.is_empty());
+        assert!(host.scene().paths().count() > 0, "graph rows paint stroked lane paths");
         host.click_text("×");
         host.click_text("Worktrees");
         assert!(has_text(&host, "(main)") && has_text(&host, "feature"));
