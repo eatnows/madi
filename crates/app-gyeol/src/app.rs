@@ -88,6 +88,7 @@ pub struct Madi {
     pub settings_tab: SettingsTab,
     /// The dirty editor tab awaiting a Save / Discard / Cancel decision.
     pub close_confirm: Option<usize>,
+    pub project_close_confirm: Option<String>,
     pub git_graph_open: bool,
     pub graph_commits: Vec<CommitInfo>,
     pub graph_rows: Vec<GraphRow>,
@@ -123,6 +124,7 @@ impl Madi {
             settings_open: false,
             settings_tab: SettingsTab::General,
             close_confirm: None,
+            project_close_confirm: None,
             git_graph_open: false,
             graph_commits: Vec::new(),
             graph_rows: Vec::new(),
@@ -222,6 +224,23 @@ impl Madi {
         }
         #[cfg(not(target_os = "macos"))]
         { self.error = Some("Folder picking is not available on this platform yet".into()); }
+    }
+
+    fn request_close_project(&mut self, path: String) {
+        let dirty = self.workspaces.get(&path).is_some_and(|ws| ws.tabs.iter().any(|tab| tab.editor.doc.is_dirty()));
+        if dirty { self.project_close_confirm = Some(path); } else { self.close_project(path); }
+    }
+
+    fn close_project(&mut self, path: String) {
+        let index = self.config.projects.iter().position(|p| p == &path);
+        self.workspaces.remove(&path);
+        self.config.projects.retain(|p| p != &path);
+        if self.config.last_project.as_deref() == Some(&path) { self.config.last_project = None; }
+        self.config.save();
+        if self.repo == path {
+            if let Some(next) = index.and_then(|i| self.config.projects.get(i.min(self.config.projects.len().saturating_sub(1))).cloned()) { self.open_project(next); }
+            else { self.repo.clear(); self.tree_rows.clear(); self.worktrees.clear(); self.changes.clear(); }
+        }
     }
 
     fn workspace(&self) -> Option<&Workspace> {
@@ -457,11 +476,15 @@ impl Madi {
             let active = *path == self.repo;
             let letter = Self::project_name(path).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
             let target = path.clone();
+            let close = path.clone();
             let tile = div()
                 .size(32.)
                 .items_center()
                 .justify_center()
                 .rounded(6.)
+                .on_mouse_down(move |s: &mut Madi, _, event| {
+                    if event.button == gyeol::MouseButton::Right { s.request_close_project(close.clone()); }
+                })
                 .on_click(move |s: &mut Madi, _| s.open_project(target.clone()))
                 .child(text(letter).text_color(if active { p.bg } else { p.text_dim }));
             if active { tile.bg(p.text_strong) } else { tile.border(1., p.border).hover_bg(p.selected) }
@@ -496,6 +519,16 @@ impl Madi {
                     .child(button("Cancel", p.panel, |s, _| s.close_confirm = None))
                     .child(button("Discard", p.red.with_alpha(0.35), |s, cx| s.resolve_close(false, cx)))
                     .child(button("Save", p.selected, |s, cx| s.resolve_close(true, cx)))),
+        ))
+    }
+
+    fn project_close_modal(&self, p: &Palette) -> Option<El> {
+        let path = self.project_close_confirm.clone()?;
+        Some(div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.35)).on_click(|s: &mut Madi, _| s.project_close_confirm = None).child(
+            div().w(390.).p(20.).gap(14.).rounded(8.).border(1., p.border).bg(p.bg).on_click(|_: &mut Madi, _| {})
+                .child(text("Unsaved changes").text_size(15.).text_color(p.text_strong))
+                .child(text("Close this project and discard its unsaved files?").text_size(12.).text_color(p.text_dim))
+                .child(div().row().justify_end().gap(8.).child(div().px(10.).py(6.).rounded(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.project_close_confirm = None).child(text("Cancel").text_size(12.).text_color(p.text_dim))).child(div().px(10.).py(6.).rounded(6.).bg(p.red.with_alpha(0.35)).on_click(move |s: &mut Madi, _| { s.project_close_confirm = None; s.close_project(path.clone()); }).child(text("Discard").text_size(12.).text_color(p.text_strong)))),
         ))
     }
 
@@ -800,6 +833,9 @@ impl View for Madi {
             root = root.child(settings);
         }
         if let Some(confirm) = self.close_confirm_modal(&p) {
+            root = root.child(confirm);
+        }
+        if let Some(confirm) = self.project_close_modal(&p) {
             root = root.child(confirm);
         }
         root
