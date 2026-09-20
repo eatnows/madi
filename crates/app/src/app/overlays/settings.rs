@@ -174,11 +174,8 @@ impl Madi {
             .bg(CHROME())
             .border_b_1()
             .border_color(BORDER())
-            .font_family(MONO)
-            .text_color(TEXT_DIM())
-            .child(format!("settings / {}", tab.label().to_lowercase()))
+            .child(div().text_color(TEXT_STRONG()).child("Settings"))
             .child(div().flex_1())
-            .child(div().text_xs().text_color(TEXT_DIMMER()).child("esc"))
             .child(
                 div()
                     .id("settings-close")

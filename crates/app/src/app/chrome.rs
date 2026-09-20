@@ -6,24 +6,27 @@ use super::{workspace::{TabBody, TabKey}, Madi};
 use madi_ui::theme::*;
 
 impl Madi {
-    /// `madi / project / path/of/the/active/file`.
-    fn breadcrumb(&self) -> String {
+    /// The window's heading: what is open (bold) and where it lives (dim).
+    pub(super) fn title_parts(&self) -> (String, String) {
+        let file_name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let dir = |p: &std::path::Path| p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+        let project = Self::project_name(&self.repo);
+        let active = self.active_tab().map(|t| &t.key);
         if self.repo.is_empty() {
-            return match self.active_tab().map(|t| &t.key) {
-                Some(TabKey::File(path)) => format!("madi / {}", path.display()),
-                _ => "madi".into(),
+            return match active {
+                Some(TabKey::File(path)) => (file_name(path), dir(path)),
+                _ => ("Madi".into(), String::new()),
             };
         }
-        let mut crumb = format!("madi / {}", Self::project_name(&self.repo));
-        match self.active_tab().map(|t| (&t.key, &t.title)) {
-            Some((TabKey::File(path), _)) => {
-                let rel = path.strip_prefix(&self.repo).unwrap_or(path).to_string_lossy().into_owned();
-                crumb.push_str(&format!(" / {rel}"));
+        match active {
+            Some(TabKey::File(path)) => {
+                let rel_dir = path.strip_prefix(&self.repo).map(dir).unwrap_or_else(|_| dir(path));
+                let place = if rel_dir.is_empty() { project } else { format!("{project} · {rel_dir}") };
+                (file_name(path), place)
             }
-            Some((TabKey::Diff { path, .. }, _)) => crumb.push_str(&format!(" / {path} (diff)")),
-            None => {}
+            Some(TabKey::Diff { path, .. }) => (file_name(std::path::Path::new(path)), format!("{project} · Diff")),
+            None => (project, String::new()),
         }
-        crumb
     }
 
     fn icon_button<I: IntoElement>(
@@ -59,9 +62,8 @@ impl Madi {
             .bg(CHROME())
             .border_b_1()
             .border_color(BORDER())
-            .font_family(MONO)
-            .text_color(TEXT_DIM())
-            .child(self.breadcrumb())
+            .child(div().text_color(TEXT_STRONG()).child(self.title_parts().0))
+            .child(div().text_xs().text_color(TEXT_DIM()).child(self.title_parts().1))
             .when_some(self.error.clone(), |d, e| d.child(div().text_color(RED()).text_xs().child(e)))
             .child(div().flex_1())
             .child(self.icon_button("focus-mode", self.focus_mode, madi_ui::icon::focus, cx.listener(|this, _, _, cx| this.toggle_focus_mode(cx))))

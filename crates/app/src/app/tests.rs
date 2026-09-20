@@ -722,3 +722,23 @@ fn settings_modal_sets_font_size_and_hands_focus_back_and_focus_mode_toggles(cx:
     cx.simulate_keystrokes(&format!("{cmd}-alt-z"));
     assert!(!view.read_with(cx, |m, _| m.focus_mode));
 }
+
+#[gpui::test]
+fn the_top_bar_names_what_is_open_and_where(cx: &mut TestAppContext) {
+    let (root, proj) = project_with_files("title");
+    std::fs::remove_dir_all(proj.join(".git")).unwrap();
+    let path = proj.to_string_lossy().into_owned();
+    let name = Madi::project_name(&path);
+    let config = config_in(&root);
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
+    cx.run_until_parked();
+
+    assert_eq!(view.read_with(cx, |m, _| m.title_parts()), (name.clone(), String::new()));
+    view.update_in(cx, |m, window, cx| m.open_file(proj.join("README.md"), false, window, cx));
+    assert_eq!(view.read_with(cx, |m, _| m.title_parts()), ("README.md".to_string(), name.clone()));
+    view.update_in(cx, |m, window, cx| m.open_file(proj.join("src/main.rs"), false, window, cx));
+    assert_eq!(view.read_with(cx, |m, _| m.title_parts()), ("main.rs".to_string(), format!("{name} · src")));
+
+    view.update(cx, |m, cx| m.show_loose_files(cx));
+    assert_eq!(view.read_with(cx, |m, _| m.title_parts()), ("Madi".to_string(), String::new()));
+}
