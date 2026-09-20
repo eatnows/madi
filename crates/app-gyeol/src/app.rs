@@ -6,7 +6,7 @@ use std::{
 };
 
 use gyeol::{div, text, uniform_list, Color, Cx, Element, Event, NamedKey, SystemTheme, View};
-use madi_git::{diff::{self, FileDiff}, worktree::WorktreeInfo};
+use madi_git::{diff::{self, FileDiff}, git_log::{self, CommitInfo}, graph::{compute_rows, GraphRow}, time, worktree::WorktreeInfo};
 use madi_project::{
     config::{Appearance, Config},
     scan::{scan_repo, Issue, ScanOutcome},
@@ -86,6 +86,12 @@ pub struct Madi {
     pub settings_tab: SettingsTab,
     /// The dirty editor tab awaiting a Save / Discard / Cancel decision.
     pub close_confirm: Option<usize>,
+    pub add_project_open: bool,
+    pub add_project_path: String,
+    pub git_graph_open: bool,
+    pub graph_commits: Vec<CommitInfo>,
+    pub graph_rows: Vec<GraphRow>,
+    pub graph_branch: String,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
     pub blink_epoch: Instant,
@@ -112,6 +118,12 @@ impl Madi {
             settings_open: false,
             settings_tab: SettingsTab::General,
             close_confirm: None,
+            add_project_open: false,
+            add_project_path: String::new(),
+            git_graph_open: false,
+            graph_commits: Vec::new(),
+            graph_rows: Vec::new(),
+            graph_branch: String::new(),
             error: None,
             blink_epoch: Instant::now(),
             window_focused: true,
@@ -149,6 +161,26 @@ impl Madi {
         self.error = None;
         self.refresh_tree();
         self.refresh_worktrees();
+        self.git_graph_open = false;
+    }
+
+    fn open_graph(&mut self) {
+        let branch = self.selected_worktree.and_then(|i| self.worktrees.get(i)).and_then(|w| w.branch.clone())
+            .or_else(|| self.worktrees.iter().find(|w| w.is_main).and_then(|w| w.branch.clone()));
+        let Some(branch) = branch else { self.error = Some("No git branch to show".into()); return };
+        match git_log::git_log(self.repo.clone(), branch.clone(), 0, 300) {
+            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.git_graph_open = true; }
+            Err(reason) => self.error = Some(format!("Can't load git graph: {reason}")),
+        }
+    }
+
+    fn submit_project_path(&mut self) {
+        let path = self.add_project_path.trim().to_string();
+        if path.is_empty() { return; }
+        if !Path::new(&path).is_dir() { self.error = Some(format!("Folder not found: {path}")); return; }
+        self.add_project_open = false;
+        self.add_project_path.clear();
+        self.open_project(path);
     }
 
     fn workspace(&self) -> Option<&Workspace> {
@@ -383,6 +415,7 @@ impl Madi {
             if active { tile.bg(p.text_strong) } else { tile.border(1., p.border).hover_bg(p.selected) }
         });
         div().w(48.).bg(p.chrome).items_center().py(8.).gap(8.).children(tiles)
+            .child(div().size(32.).items_center().justify_center().rounded(6.).border(1., p.border).hover_bg(p.selected).on_click(|s: &mut Madi, _| { s.add_project_open = true; s.add_project_path.clear(); }).child(text("＋").text_color(p.text_dim)))
     }
 
     fn icon_button(&self, p: &Palette, active: bool, icon: El, on_click: impl Fn(&mut Madi, &mut Cx) + 'static) -> El {
@@ -414,6 +447,17 @@ impl Madi {
         ))
     }
 
+    fn add_project_modal(&self, p: &Palette) -> Option<El> {
+        if !self.add_project_open { return None; }
+        Some(div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.35)).on_click(|s: &mut Madi, _| s.add_project_open = false).child(
+            div().w(460.).p(20.).gap(12.).rounded(8.).border(1., p.border).bg(p.bg).on_click(|_: &mut Madi, _| {})
+                .child(text("Add project").text_size(15.).text_color(p.text_strong))
+                .child(text("Enter the folder path, then press Enter.").text_size(12.).text_color(p.text_dim))
+                .child(div().h(32.).px(10.).items_center().rounded(6.).border(1., p.border).bg(p.panel).child(text(if self.add_project_path.is_empty() { "Folder path".into() } else { self.add_project_path.clone() }).text_size(12.).text_color(if self.add_project_path.is_empty() { p.text_dim } else { p.text })))
+                .child(div().row().justify_end().gap(8.).child(div().px(10.).py(6.).rounded(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.add_project_open = false).child(text("Cancel").text_size(12.).text_color(p.text_dim))).child(div().px(10.).py(6.).rounded(6.).bg(p.selected).on_click(|s: &mut Madi, _| s.submit_project_path()).child(text("Add").text_size(12.).text_color(p.text_strong)))),
+        ))
+    }
+
     fn topbar(&self, p: &Palette) -> El {
         let (name, place) = self.title_parts();
         let mut bar = div()
@@ -433,6 +477,7 @@ impl Madi {
             .child(self.icon_button(p, self.focus_mode, icons::focus(if self.focus_mode { p.text_strong } else { p.text_dim }), |s, _| {
                 s.focus_mode = !s.focus_mode
             }))
+            .child(div().px(8.).py(5.).rounded(6.).bg(if self.git_graph_open { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(|s: &mut Madi, _| { if s.git_graph_open { s.git_graph_open = false } else { s.open_graph() } }).child(text("Graph").text_size(12.).text_color(p.text_dim)))
             .child(self.icon_button(p, self.settings_open, icons::sliders(if self.settings_open { p.text_strong } else { p.text_dim }), |s, _| {
                 if s.settings_open {
                     s.close_settings();
@@ -616,6 +661,29 @@ impl Madi {
         div().id(("diff-x", &self.repo, &path)).grow().overflow_x_scroll().child(div().w(min_width).h_full().child(rows.w(min_width)))
     }
 
+    fn graph_view(&self, cx: &Cx, p: &Palette) -> El {
+        let rows = uniform_list(cx, ("git-graph", &self.repo), self.graph_commits.len(), 32., |i| {
+            let commit = &self.graph_commits[i];
+            let row = &self.graph_rows[i];
+            let lane_x = 10. + row.lane as f32 * 16.;
+            let colors = [p.amber, p.green, p.red, p.text_dim];
+            let mut lanes = div().w((row.max_lane + 1) as f32 * 16. + 12.).h(32.);
+            for lane in row.pass_through.iter().copied().chain(row.continues.then_some(row.lane)) {
+                lanes = lanes.child(div().absolute().left(10. + lane as f32 * 16.).top(0.).w(2.).h(32.).bg(colors[lane % 4]));
+            }
+            lanes = lanes.child(div().absolute().left(lane_x - 4.).top(12.).size(10.).rounded(5.).bg(colors[row.lane % 4]));
+            div().row().items_center().h(32.).px(12.).gap(10.).min_w(760.).hover_bg(p.selected)
+                .child(lanes)
+                .child(text(commit.summary.clone()).text_size(12.).text_color(p.text_strong).grow())
+                .child(text(commit.author_name.clone()).text_size(11.).text_color(p.text_dim).w(120.))
+                .child(text(time::relative(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64), commit.timestamp)).text_size(11.).text_color(p.text_dim).w(70.))
+                .child(text(commit.short_oid.clone()).text_size(11.).text_family(editor::MONO).text_color(p.text_dim).w(64.))
+        }).grow().scrollbar(p.text_dim.with_alpha(0.4));
+        div().h(250.).border(1., p.border).bg(p.panel)
+            .child(div().row().items_center().h(34.).px(12.).child(text(format!("Graph · {}", self.graph_branch)).text_size(12.).text_color(p.text_strong)).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
+            .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.)))
+    }
+
     fn main_area(&self, cx: &mut Cx, p: &Palette) -> El {
         let content = if self.workspace().is_some_and(|ws| ws.showing_diff) {
             self.diff_view(cx, p)
@@ -665,7 +733,8 @@ impl View for Madi {
         if !self.focus_mode {
             middle = middle.child(self.rail(&p)).child(div().w(1.).bg(p.border)).child(self.sidebar(cx, &p));
         }
-        let mut root = div().bg(p.bg).text_color(p.text).text_size(13.).child(self.topbar(&p)).child(middle.child(self.main_area(cx, &p)));
+        let body = div().col().grow().child(middle.child(self.main_area(cx, &p))).child(if self.git_graph_open { self.graph_view(cx, &p) } else { div() });
+        let mut root = div().bg(p.bg).text_color(p.text).text_size(13.).child(self.topbar(&p)).child(body);
         if !self.focus_mode {
             root = root.child(self.status_bar(&p));
         }
@@ -675,6 +744,9 @@ impl View for Madi {
         if let Some(confirm) = self.close_confirm_modal(&p) {
             root = root.child(confirm);
         }
+        if let Some(add) = self.add_project_modal(&p) {
+            root = root.child(add);
+        }
         root
     }
 
@@ -682,6 +754,19 @@ impl View for Madi {
         match event {
             Event::FocusChanged(focused) => self.window_focused = *focused,
             Event::KeyDown { key, .. } => {
+                if self.add_project_open {
+                    match key {
+                        gyeol::Key::Named(NamedKey::Escape) => self.add_project_open = false,
+                        gyeol::Key::Named(NamedKey::Enter) => self.submit_project_path(),
+                        gyeol::Key::Named(NamedKey::Backspace) => { self.add_project_path.pop(); }
+                        gyeol::Key::Char(c) if cx.modifiers.command() && c.eq_ignore_ascii_case("v") => {
+                            if let Some(text) = cx.clipboard_text() { self.add_project_path.push_str(&text); }
+                        }
+                        gyeol::Key::Char(c) if !cx.modifiers.command() => self.add_project_path.push_str(c),
+                        _ => {}
+                    }
+                    return;
+                }
                 if self.close_confirm.is_some() {
                     if matches!(key, gyeol::Key::Named(NamedKey::Escape)) { self.close_confirm = None; }
                     return;
@@ -1079,6 +1164,9 @@ mod tests {
 
         let config = Config::at(Some(root.join("config.json")));
         let mut host = TestHost::new(Madi::new(Some(repo.to_string_lossy().into_owned()), config), (1000., 700.));
+        host.click_text("Graph");
+        assert!(host.state().git_graph_open && !host.state().graph_commits.is_empty());
+        host.click_text("×");
         host.click_text("Worktrees");
         assert!(has_text(&host, "(main)") && has_text(&host, "feature"));
         host.click_text("feature");
@@ -1088,5 +1176,17 @@ mod tests {
         assert!(has_text(&host, &("line 000 ".to_owned() + &long)));
         let visible = host.scene().texts().filter(|text| text.content.starts_with("line ")).count();
         assert!(visible < 80, "the diff list should only build rows near the viewport");
+    }
+
+    #[test]
+    fn project_plus_accepts_a_typed_folder_path() {
+        let (mut host, root, _) = app("add-project");
+        let extra = root.join("extra");
+        std::fs::create_dir_all(&extra).unwrap();
+        host.click_text("＋");
+        assert!(has_text(&host, "Add project"));
+        typed(&mut host, &extra.to_string_lossy());
+        press(&mut host, Key::Named(NamedKey::Enter));
+        assert_eq!(host.state().repo, extra.to_string_lossy());
     }
 }
