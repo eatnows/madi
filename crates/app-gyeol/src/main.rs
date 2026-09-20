@@ -1,6 +1,7 @@
 mod app;
 mod editor;
 mod icons;
+mod settings;
 mod theme;
 
 use gyeol::WindowOptions;

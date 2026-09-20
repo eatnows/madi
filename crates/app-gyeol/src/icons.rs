@@ -23,3 +23,16 @@ pub fn focus<S>(color: Color) -> Element<S> {
         .child(div().row().justify_between().child(corner(color, true, true)).child(corner(color, true, false)))
         .child(div().row().justify_between().child(corner(color, false, true)).child(corner(color, false, false)))
 }
+
+/// Three adjustable bars with their knobs: the settings icon.
+pub fn sliders<S>(color: Color) -> Element<S> {
+    let line = |left: bool| {
+        div()
+            .w(14.)
+            .h(4.)
+            .items_center()
+            .child(div().w(14.).h(1.).bg(color))
+            .child(div().absolute().left(if left { 3. } else { 9. }).size(4.).rounded(2.).bg(color))
+    };
+    div().size(14.).justify_between().child(line(true)).child(line(false)).child(line(true))
+}

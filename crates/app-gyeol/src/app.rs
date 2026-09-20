@@ -14,6 +14,7 @@ use madi_project::{
 use crate::{
     editor::{self, Editor},
     icons,
+    settings::SettingsTab,
     theme::Palette,
 };
 
@@ -65,6 +66,8 @@ pub struct Madi {
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
     pub focus: Focus,
+    pub settings_open: bool,
+    pub settings_tab: SettingsTab,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
     pub blink_epoch: Instant,
@@ -82,6 +85,8 @@ impl Madi {
             sidebar_width: 280.,
             focus_mode: false,
             focus: Focus::Tree,
+            settings_open: false,
+            settings_tab: SettingsTab::General,
             error: None,
             blink_epoch: Instant::now(),
             window_focused: true,
@@ -300,6 +305,13 @@ impl Madi {
             .child(div().grow())
             .child(self.icon_button(p, self.focus_mode, icons::focus(if self.focus_mode { p.text_strong } else { p.text_dim }), |s, _| {
                 s.focus_mode = !s.focus_mode
+            }))
+            .child(self.icon_button(p, self.settings_open, icons::sliders(if self.settings_open { p.text_strong } else { p.text_dim }), |s, _| {
+                if s.settings_open {
+                    s.close_settings();
+                } else {
+                    s.open_settings();
+                }
             }));
         div().col().child(bar).child(div().h(1.).bg(p.border))
     }
@@ -452,13 +464,27 @@ impl View for Madi {
         if !self.focus_mode {
             root = root.child(self.status_bar(&p));
         }
+        if let Some(settings) = self.settings_modal(&p) {
+            root = root.child(settings);
+        }
         root
     }
 
     fn event(&mut self, event: &Event, cx: &mut Cx) {
         match event {
             Event::FocusChanged(focused) => self.window_focused = *focused,
-            _ => self.editor_event(event, cx),
+            Event::KeyDown { key, .. } => {
+                if self.settings_key(key, cx) {
+                    return;
+                }
+                if matches!(key, gyeol::Key::Char(c) if c == ",") && cx.modifiers.command() {
+                    self.open_settings();
+                    return;
+                }
+                self.editor_event(event, cx);
+            }
+            _ if !self.settings_open => self.editor_event(event, cx),
+            _ => {}
         }
     }
 }
@@ -737,5 +763,74 @@ mod tests {
         press(&mut host, Key::Named(NamedKey::ArrowDown));
         assert!(host.scroll_offset(("editor-lines", &file)).1 > 1000., "jumping to the end scrolls the last line into view");
         assert!(has_text(&host, "line 199"));
+    }
+
+    // ---- settings --------------------------------------------------------------------------
+
+    #[test]
+    fn settings_open_from_the_shortcut_and_close_without_leaking_input() {
+        let (mut host, _, _) = app("settings-shortcut");
+        host.click_text("README.md");
+        shortcut(&mut host, ",");
+        assert!(host.state().settings_open);
+        assert!(has_text(&host, "Settings"));
+
+        typed(&mut host, "x");
+        assert_eq!(doc_text(&host), "# hi\n", "modal owns keyboard input");
+
+        press(&mut host, Key::Named(NamedKey::Escape));
+        assert!(!host.state().settings_open);
+        typed(&mut host, "x");
+        assert_eq!(doc_text(&host), "x# hi\n", "the editor regains keyboard input");
+
+        host.click((1170., 20.));
+        assert!(host.state().settings_open, "the top bar sliders icon opens settings");
+    }
+
+    #[test]
+    fn settings_close_from_the_header_or_backdrop_but_not_the_modal_body() {
+        let (mut host, _, _) = app("settings-dismiss");
+        host.state_mut().open_settings();
+        host.frame();
+        host.click((600., 600.));
+        assert!(host.state().settings_open, "a click in the modal does not reach the backdrop");
+
+        host.click_text("×");
+        assert!(!host.state().settings_open);
+        host.state_mut().open_settings();
+        host.frame();
+        host.click((10., 100.));
+        assert!(!host.state().settings_open, "the backdrop dismisses the modal");
+    }
+
+    #[test]
+    fn settings_tabs_theme_and_font_size_update_and_persist() {
+        let (mut host, root, _) = app("settings-values");
+        let config_path = root.join("config.json");
+        host.click_text("README.md");
+        let light = host.scene().quads().next().unwrap().background;
+        host.state_mut().open_settings();
+        host.frame();
+
+        host.click_text("Dark");
+        assert_eq!(host.state().config.appearance, Appearance::Dark);
+        assert_ne!(host.scene().quads().next().unwrap().background, light);
+        assert!(std::fs::read_to_string(&config_path).unwrap().contains("\"dark\""));
+
+        host.click_text("Editor");
+        assert!(has_text(&host, "Font size") && !has_text(&host, "Theme"));
+        host.click_text("+");
+        assert_eq!(host.state().config.font_size(), 14.);
+        let editor_text = host.scene().texts().find(|t| t.content == "# hi").unwrap();
+        assert_eq!(editor_text.style.size, 14., "open editors repaint at the configured size immediately");
+        assert!(std::fs::read_to_string(&config_path).unwrap().contains("editor_font_size"));
+        for _ in 0..30 {
+            host.click_text("+");
+        }
+        assert_eq!(host.state().config.font_size(), 24.);
+        for _ in 0..30 {
+            host.click_text("−");
+        }
+        assert_eq!(host.state().config.font_size(), 10.);
     }
 }
