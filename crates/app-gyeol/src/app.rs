@@ -75,6 +75,7 @@ pub struct Madi {
     pub sidebar_width: f32,
     pub worktrees: Vec<WorktreeInfo>,
     pub pins: HashMap<String, String>,
+    pub branches: Vec<String>,
     pub changes: Vec<FileDiff>,
     pub selected_worktree: Option<usize>,
     pub selected_change: Option<usize>,
@@ -92,6 +93,7 @@ pub struct Madi {
     pub graph_branch: String,
     pub graph_selected: Option<usize>,
     pub graph_files: Vec<FileDiff>,
+    pub graph_picker_open: bool,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
     pub blink_epoch: Instant,
@@ -109,6 +111,7 @@ impl Madi {
             sidebar_width: 280.,
             worktrees: Vec::new(),
             pins: HashMap::new(),
+            branches: Vec::new(),
             changes: Vec::new(),
             selected_worktree: None,
             selected_change: None,
@@ -124,6 +127,7 @@ impl Madi {
             graph_branch: String::new(),
             graph_selected: None,
             graph_files: Vec::new(),
+            graph_picker_open: false,
             error: None,
             blink_epoch: Instant::now(),
             window_focused: true,
@@ -168,8 +172,12 @@ impl Madi {
         let branch = self.selected_worktree.and_then(|i| self.worktrees.get(i)).and_then(|w| w.branch.clone())
             .or_else(|| self.worktrees.iter().find(|w| w.is_main).and_then(|w| w.branch.clone()));
         let Some(branch) = branch else { self.error = Some("No git branch to show".into()); return };
+        self.load_graph(branch);
+    }
+
+    fn load_graph(&mut self, branch: String) {
         match git_log::git_log(self.repo.clone(), branch.clone(), 0, 300) {
-            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.graph_selected = None; self.graph_files.clear(); self.git_graph_open = true; }
+            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.graph_selected = None; self.graph_files.clear(); self.graph_picker_open = false; self.git_graph_open = true; }
             Err(reason) => self.error = Some(format!("Can't load git graph: {reason}")),
         }
     }
@@ -354,6 +362,7 @@ impl Madi {
             Ok(ScanOutcome::Loaded(scan)) => {
                 self.worktrees = scan.worktrees;
                 self.pins = scan.pins;
+                self.branches = scan.branches;
                 self.config.pins.insert(self.repo.clone(), self.pins.clone());
                 self.config.save();
             }
@@ -697,8 +706,14 @@ impl Madi {
             let files = self.graph_files.iter().enumerate().map(|(i, file)| div().row().px(12.).py(3.).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.open_graph_file(i)).child(text(file.path.clone()).text_size(11.).text_color(p.text)).child(div().grow()).child(text(format!("+{} −{}", file.additions, file.deletions)).text_size(10.).text_color(p.text_dim)));
             div().max_h(120.).overflow_y_scroll().child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(5.).child(text(commit.summary.clone()).text_size(12.).text_color(p.text_strong))).child(div().children(files))
         });
+        let branches = self.branches.iter().cloned().map(|branch| {
+            let selected = branch == self.graph_branch;
+            let target = branch.clone();
+            div().px(8.).py(4.).rounded(5.).bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.load_graph(target.clone())).child(text(branch).text_size(11.).text_color(if selected { p.text_strong } else { p.text_dim }))
+        });
         div().h(320.).border(1., p.border).bg(p.panel)
-            .child(div().row().items_center().h(34.).px(12.).child(text(format!("Graph · {}", self.graph_branch)).text_size(12.).text_color(p.text_strong)).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
+            .child(div().row().items_center().h(34.).px(12.).child(div().px(6.).rounded(5.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.graph_picker_open = !s.graph_picker_open).child(text(format!("Graph · {} ⌄", self.graph_branch)).text_size(12.).text_color(p.text_strong))).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
+            .child(if self.graph_picker_open { div().row().px(12.).pb(6.).gap(4.).children(branches) } else { div() })
             .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.))).children(detail)
     }
 
