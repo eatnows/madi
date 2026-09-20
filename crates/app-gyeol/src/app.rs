@@ -908,28 +908,7 @@ impl Madi {
 
     fn diff_view(&self, cx: &Cx, p: &Palette) -> El {
         let Some(diff) = self.workspace().and_then(|ws| ws.diff.as_ref()) else { return div().grow() };
-        if diff.file.binary {
-            return div().grow().items_center().justify_center().child(text("Binary file — diff is unavailable").text_size(12.).text_color(p.text_dim));
-        }
-        let widest = diff.file.lines.iter().flat_map(|line| line.segments.iter()).map(|segment| segment.text.chars().count()).sum::<usize>().max(80);
-        let min_width = 100. + widest as f32 * self.config.font_size() * 0.62;
-        let path = diff.file.path.clone();
-        let rows = uniform_list(cx, ("diff-lines", &self.repo, &path), diff.file.lines.len(), 20., |i| {
-            let line = &diff.file.lines[i];
-            if line.tag == "gap" {
-                return div().min_w(min_width).items_center().justify_center().bg(p.panel).child(text("⋯ unchanged ⋯").text_size(11.).text_color(p.text_dim));
-            }
-            let (bg, fg, marker) = match line.tag { "insert" => (p.add_bg, p.add_fg, "+"), "delete" => (p.del_bg, p.del_fg, "-"), _ => (Color::TRANSPARENT, p.text, " ") };
-            let old = line.old_lineno.map(|n| n.to_string()).unwrap_or_default();
-            let new = line.new_lineno.map(|n| n.to_string()).unwrap_or_default();
-            let source = line.segments.iter().map(|s| s.text.as_str()).collect::<String>();
-            div().row().items_center().min_w(min_width).bg(bg)
-                .child(div().w(42.).px(6.).justify_end().child(text(old).text_size(11.).text_color(p.text_dim)))
-                .child(div().w(42.).px(6.).justify_end().child(text(new).text_size(11.).text_color(p.text_dim)))
-                .child(div().w(16.).child(text(marker).text_size(12.).text_color(fg)))
-                .child(text(source).text_size(self.config.font_size()).text_family(editor::MONO).text_color(fg))
-        }).grow().min_w(min_width).scrollbar(p.text_dim.with_alpha(0.4));
-        div().id(("diff-x", &self.repo, &path)).grow().overflow_x_scroll().child(div().w(min_width).h_full().child(rows.w(min_width)))
+        self.split_diff_view(cx, p, &diff.file, "worktree-diff")
     }
 
     fn graph_diff_cell(cell: Option<&madi_git::diff_layout::Cell>, p: &Palette, width: f32) -> El {
@@ -945,7 +924,8 @@ impl Madi {
             .child(text(content).text_size(11.).text_family(editor::MONO).text_color(fg))
     }
 
-    fn graph_diff_view(&self, cx: &Cx, p: &Palette, file: &FileDiff) -> El {
+    /// The original app's side-by-side diff layout, used both for worktree tabs and commit detail.
+    fn split_diff_view(&self, cx: &Cx, p: &Palette, file: &FileDiff, id: &'static str) -> El {
         if file.binary {
             return div().grow().items_center().justify_center().child(text("Binary file — diff is unavailable").text_size(12.).text_color(p.text_dim));
         }
@@ -953,7 +933,7 @@ impl Madi {
         let half_width = (62. + layout.widest_line(false) as f32 * self.config.font_size() * 0.62).max(300.);
         let full_width = half_width * 2.;
         let path = file.path.clone();
-        let rows = uniform_list(cx, ("graph-diff", &self.repo, &path), layout.split.len(), 20., |ix| {
+        let rows = uniform_list(cx, (id, &self.repo, &path), layout.split.len(), 20., |ix| {
             match &layout.split[ix] {
                 madi_git::diff_layout::Row::Gap => div().w(full_width).h(20.).items_center().justify_center().bg(p.panel).child(text("⋯ unchanged ⋯").text_size(10.).text_color(p.text_dim)),
                 madi_git::diff_layout::Row::Pair(old, new) => div().row().w(full_width).h(20.)
@@ -962,7 +942,7 @@ impl Madi {
                     .child(Self::graph_diff_cell(new.as_ref(), p, half_width)),
             }
         }).grow().scrollbar(p.text_dim.with_alpha(0.4));
-        div().id(("graph-diff-x", &self.repo, &path)).grow().overflow_x_scroll().child(div().w(full_width).h_full().child(rows.w(full_width)))
+        div().id((id, "x", &self.repo, &path)).grow().overflow_x_scroll().child(div().w(full_width).h_full().child(rows.w(full_width)))
     }
 
     fn graph_view(&self, cx: &Cx, p: &Palette) -> El {
@@ -1020,7 +1000,7 @@ impl Madi {
             }).grow().p(6.).scrollbar(p.text_dim.with_alpha(0.4));
             let diff = self.graph_file_selected.and_then(|ix| self.graph_files.get(ix)).map_or_else(
                 || div().grow().items_center().justify_center().child(text("Select a changed file").text_size(12.).text_color(p.text_dim)),
-                |file| self.graph_diff_view(cx, p, file),
+                |file| self.split_diff_view(cx, p, file, "graph-diff"),
             );
             div().row().grow().child(div().w(self.graph_files_width).h_full().border(1., p.border_soft).child(files)).child(handle(GraphHandle::FilesWidth)).child(diff)
         };
@@ -1578,6 +1558,7 @@ mod tests {
         assert!(has_text(&host, "README.md"));
         host.click_text("README.md");
         assert!(host.state().workspace().unwrap().showing_diff);
+        assert!(has_text(&host, "base"), "the worktree diff keeps the old side in its left column");
         assert!(has_text(&host, &("line 000 ".to_owned() + &long)));
         let visible = host.scene().texts().filter(|text| text.content.starts_with("line ")).count();
         assert!(visible < 80, "the diff list should only build rows near the viewport");
