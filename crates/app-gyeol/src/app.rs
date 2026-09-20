@@ -96,6 +96,7 @@ pub struct Madi {
     pub graph_selected: Option<usize>,
     pub graph_files: Vec<FileDiff>,
     pub graph_picker_open: bool,
+    pub graph_follow: bool,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
     pub blink_epoch: Instant,
@@ -132,6 +133,7 @@ impl Madi {
             graph_selected: None,
             graph_files: Vec::new(),
             graph_picker_open: false,
+            graph_follow: true,
             error: None,
             blink_epoch: Instant::now(),
             window_focused: true,
@@ -171,6 +173,7 @@ impl Madi {
     }
 
     fn open_graph(&mut self) {
+        self.graph_follow = true;
         let branch = self.selected_worktree.and_then(|i| self.worktrees.get(i)).and_then(|w| w.branch.clone())
             .or_else(|| self.worktrees.iter().find(|w| w.is_main).and_then(|w| w.branch.clone()));
         let Some(branch) = branch else { self.error = Some("No git branch to show".into()); return };
@@ -404,9 +407,13 @@ impl Madi {
         self.changes.clear();
         self.error = None;
         let base = self.pins.get(&worktree.path).cloned().unwrap_or_default();
+        let branch = worktree.branch.clone();
         match diff::diff_against_base(worktree.path.clone(), base) {
             Ok(result) => self.changes = result.files,
             Err(reason) => self.error = Some(format!("Can't load changes: {reason}")),
+        }
+        if self.git_graph_open && self.graph_follow {
+            if let Some(branch) = branch { self.load_graph(branch); }
         }
     }
 
@@ -768,10 +775,10 @@ impl Madi {
         let branches = self.branches.iter().cloned().map(|branch| {
             let selected = branch == self.graph_branch;
             let target = branch.clone();
-            div().px(8.).py(4.).rounded(5.).bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.load_graph(target.clone())).child(text(branch).text_size(11.).text_color(if selected { p.text_strong } else { p.text_dim }))
+            div().px(8.).py(4.).rounded(5.).bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| { s.graph_follow = false; s.load_graph(target.clone()) }).child(text(branch).text_size(11.).text_color(if selected { p.text_strong } else { p.text_dim }))
         });
         div().h(320.).border(1., p.border).bg(p.panel)
-            .child(div().row().items_center().h(34.).px(12.).child(div().px(6.).rounded(5.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.graph_picker_open = !s.graph_picker_open).child(text(format!("Graph · {} ⌄", self.graph_branch)).text_size(12.).text_color(p.text_strong))).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
+            .child(div().row().items_center().h(34.).px(12.).child(div().px(6.).rounded(5.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.graph_picker_open = !s.graph_picker_open).child(text(format!("Graph · {} ⌄", self.graph_branch)).text_size(12.).text_color(p.text_strong))).child(text(if self.graph_follow { "following worktree" } else { "pinned" }).text_size(10.).text_color(if self.graph_follow { p.green } else { p.amber })).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
             .child(if self.graph_picker_open { div().row().px(12.).pb(6.).gap(4.).children(branches) } else { div() })
             .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.))).children(detail)
     }
