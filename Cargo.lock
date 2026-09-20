@@ -3562,6 +3562,7 @@ name = "madi-gyeol"
 version = "0.1.0"
 dependencies = [
  "gyeol",
+ "madi-git",
  "madi-project",
  "madi-text",
 ]
