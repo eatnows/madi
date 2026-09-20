@@ -80,6 +80,7 @@ pub struct Madi {
     pub selected_worktree: Option<usize>,
     pub selected_change: Option<usize>,
     pub worktree_issue: Option<Issue>,
+    pub worktree_base_picker: Option<usize>,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
     pub focus: Focus,
@@ -116,6 +117,7 @@ impl Madi {
             selected_worktree: None,
             selected_change: None,
             worktree_issue: None,
+            worktree_base_picker: None,
             focus_mode: false,
             focus: Focus::Tree,
             settings_open: false,
@@ -384,6 +386,16 @@ impl Madi {
         }
     }
 
+    fn set_worktree_base(&mut self, ix: usize, branch: String) {
+        let Some(worktree) = self.worktrees.get(ix) else { return };
+        self.pins.insert(worktree.path.clone(), branch);
+        self.config.pins.insert(self.repo.clone(), self.pins.clone());
+        self.config.save();
+        self.worktree_base_picker = None;
+        self.refresh_worktrees();
+        self.select_worktree(ix);
+    }
+
     fn open_diff(&mut self, ix: usize) {
         let Some(file) = self.changes.get(ix) else { return };
         self.selected_change = Some(ix);
@@ -550,12 +562,18 @@ impl Madi {
             let selected = self.selected_worktree == Some(i);
             let branch = wt.branch.clone().unwrap_or_else(|| "(detached)".into());
             let status = match (wt.ahead, wt.behind) { (Some(0), Some(0)) => "up to date".into(), (Some(a), Some(b)) => format!("↑{a} ↓{b}"), _ => String::new() };
+            let base = self.pins.get(&wt.path).cloned().unwrap_or_default();
             div().px(8.).py(6.).rounded(6.)
                 .bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
                 .on_click(move |s: &mut Madi, _| s.select_worktree(i))
                 .child(text(wt.name.clone()).text_size(12.).text_color(p.text_strong))
                 .child(text(format!("{branch}  {status}")).text_size(11.).text_color(p.text_dim))
+                .child(div().px(4.).rounded(4.).hover_bg(p.border).on_click(move |s: &mut Madi, _| s.worktree_base_picker = Some(i)).child(text(format!("base: {base} ⌄")).text_size(10.).text_color(p.text_dim)))
         }).h(220.).p(8.).scrollbar(p.text_dim.with_alpha(0.4));
+        let base_picker = self.worktree_base_picker.and_then(|ix| self.worktrees.get(ix).map(|wt| (ix, wt.name.clone()))).map(|(ix, name)| {
+            let branches = self.branches.iter().cloned().map(|branch| { let target = branch.clone(); div().px(7.).py(3.).rounded(4.).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.set_worktree_base(ix, target.clone())).child(text(branch).text_size(11.).text_color(p.text_dim)) });
+            div().px(12.).py(6.).gap(3.).border(1., p.border).bg(p.bg).child(text(format!("Base branch for {name}")).text_size(11.).text_color(p.text_strong)).children(branches)
+        });
         let changes_title = self.selected_worktree.and_then(|i| self.worktrees.get(i)).map(|wt| format!("CHANGES · vs {}", self.pins.get(&wt.path).cloned().unwrap_or_default())).unwrap_or_else(|| "CHANGES".into());
         let changes = if self.selected_worktree.is_none() {
             div().grow().p(16.).child(text("Select a worktree to see its changes").text_size(12.).text_color(p.text_dim))
@@ -573,7 +591,7 @@ impl Madi {
                     .child(text(counts).text_size(11.).text_color(p.text_dim))
             }).grow().p(8.).scrollbar(p.text_dim.with_alpha(0.4))
         };
-        div().grow().child(worktrees).child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(8.).child(text(changes_title).text_size(11.).text_color(p.text_dim))).child(div().h(1.).bg(p.border_soft)).child(changes)
+        div().grow().child(worktrees).children(base_picker).child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(8.).child(text(changes_title).text_size(11.).text_color(p.text_dim))).child(div().h(1.).bg(p.border_soft)).child(changes)
     }
 
     fn sidebar(&self, cx: &Cx, p: &Palette) -> El {
