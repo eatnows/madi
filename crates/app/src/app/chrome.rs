@@ -26,6 +26,28 @@ impl Madi {
         crumb
     }
 
+    fn icon_button<I: IntoElement>(
+        &self,
+        id: &'static str,
+        active: bool,
+        icon: fn(gpui::Rgba) -> I,
+        on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> impl IntoElement {
+        let color = if active { TEXT_STRONG() } else { TEXT_DIM() };
+        div()
+            .id(id)
+            .size(px(28.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .cursor_pointer()
+            .when(active, |d| d.bg(SELECTED()))
+            .hover(|d| d.bg(SELECTED()))
+            .on_click(on_click)
+            .child(icon(color))
+    }
+
     pub(super) fn topbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .h(px(40.))
@@ -42,19 +64,8 @@ impl Madi {
             .child(self.breadcrumb())
             .when_some(self.error.clone(), |d, e| d.child(div().text_color(RED()).text_xs().child(e)))
             .child(div().flex_1())
-            .child(
-                div()
-                    .id("appearance")
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(TEXT_DIM())
-                    .hover(|d| d.bg(SELECTED()).text_color(TEXT_STRONG()))
-                    .on_click(cx.listener(|this, _, _, cx| this.cycle_appearance(cx)))
-                    .child(self.config.appearance.label()),
-            )
+            .child(self.icon_button("focus-mode", self.focus_mode, madi_ui::icon::focus, cx.listener(|this, _, _, cx| this.toggle_focus_mode(cx))))
+            .child(self.icon_button("settings", self.settings_open, madi_ui::icon::sliders, cx.listener(|this, _, window, cx| this.open_settings(window, cx))))
     }
 
     pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

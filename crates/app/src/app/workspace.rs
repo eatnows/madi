@@ -154,7 +154,8 @@ impl Madi {
         };
         self.error = None;
 
-        let editor = cx.new(|cx| Editor::new(&text, Some(path.clone()), cx));
+        let size = self.config.font_size();
+        let editor = cx.new(|cx| Editor::new(&text, Some(path.clone()), cx).with_font_size(size));
         // Editing turns a preview tab into a regular one; either way the tab bar repaints.
         let observed = editor.clone();
         let repaint = cx.observe(&editor, move |this, _, cx| {

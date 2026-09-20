@@ -7,7 +7,8 @@ and review what each worktree changed against its base branch without leaving th
 - **Worktrees** – every git worktree with ahead/behind against a pinned base branch; a changed
   file opens as a diff tab (side-by-side, or unified when narrow).
 - **Graph** – a commit graph for any branch, with the commit's files and diff.
-- Light and dark themes (follows the OS, or pick one in the top bar).
+- Settings (`Cmd+,`): theme (follows the OS or forced light/dark) and editor font size, in tabs so more can be added.
+- Focus mode (top-bar icon, `Cmd+Alt+Z`): hides the rail, sidebar, git panel and status bar.
 
 ## Layout
 

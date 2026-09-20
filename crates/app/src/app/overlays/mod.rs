@@ -1,8 +1,10 @@
 //! Modal layers over the app: the right-click context menu and the confirmation dialog that guards
 //! anything destructive (removing a worktree, discarding unsaved edits).
 mod branch_picker;
+mod settings;
 
 pub(crate) use branch_picker::{BranchPickerState, PickerTarget};
+pub(crate) use settings::SettingsTab;
 
 use gpui::{div, prelude::*, px, Context, IntoElement, MouseButton, Window};
 use madi_ui::theme::*;

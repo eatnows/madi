@@ -442,7 +442,7 @@ fn diff_tab_scrolls_both_ways_independently_and_keeps_its_position_per_tab(cx: &
 }
 
 #[gpui::test]
-fn appearance_cycles_persists_and_resolves_light_or_dark(cx: &mut TestAppContext) {
+fn appearance_is_chosen_persisted_and_resolved_light_or_dark(cx: &mut TestAppContext) {
     let root = std::env::temp_dir().join("madi-test-appearance");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -453,16 +453,16 @@ fn appearance_cycles_persists_and_resolves_light_or_dark(cx: &mut TestAppContext
     let resolves_dark = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |m, window, _| m.resolve_dark(window));
 
     assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::System);
-    view.update(cx, |m, cx| m.cycle_appearance(cx));
+    view.update(cx, |m, cx| m.set_appearance(Appearance::Light, cx));
     assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::Light);
     assert!(!resolves_dark(cx), "Light forces light regardless of the OS");
-    view.update(cx, |m, cx| m.cycle_appearance(cx));
+    view.update(cx, |m, cx| m.set_appearance(Appearance::Dark, cx));
     assert!(resolves_dark(cx), "Dark forces dark regardless of the OS");
-    view.update(cx, |m, cx| m.cycle_appearance(cx));
+    view.update(cx, |m, cx| m.set_appearance(Appearance::System, cx));
     assert_eq!(view.read_with(cx, |m, _| m.config.appearance), Appearance::System);
 
     // The choice was written to disk.
-    view.update(cx, |m, cx| m.cycle_appearance(cx));
+    view.update(cx, |m, cx| m.set_appearance(Appearance::Light, cx));
     assert_eq!(config_in(&root).appearance, Appearance::Light);
 }
 
@@ -674,11 +674,51 @@ fn a_file_opens_without_a_project_and_never_joins_the_project_list(cx: &mut Test
     view.read_with(cx, |m, _| assert_eq!(m.active_tab().map(|t| t.title.as_str()), Some("note.md")));
 
     // With a project open, a dropped file becomes a tab of that project.
-    view.update_in(cx, |m, window, cx| m.open_project(dir.clone(), cx));
+    view.update(cx, |m, cx| m.open_project(dir.clone(), cx));
     cx.run_until_parked();
     view.update_in(cx, |m, window, cx| m.open_paths(&[proj.join("README.md")], window, cx));
     view.read_with(cx, |m, _| {
         assert_eq!(m.workspace().map(|w| w.tabs.len()), Some(1));
         assert_eq!(m.workspaces[""].tabs.len(), 1);
     });
+}
+
+#[gpui::test]
+fn settings_modal_sets_font_size_and_hands_focus_back_and_focus_mode_toggles(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        bind_keys(cx);
+        madi_editor::bind_keys(cx);
+    });
+    let (root, proj) = project_with_files("settings");
+    std::fs::remove_dir_all(proj.join(".git")).unwrap();
+    let path = proj.to_string_lossy().into_owned();
+    let config = config_in(&root);
+    let (view, cx) = cx.add_window_view(|window, cx| Madi::new(Some(path.clone()), config, window, cx));
+    cx.run_until_parked();
+    view.update_in(cx, |m, window, cx| m.open_file(proj.join("README.md"), false, window, cx));
+
+    let cmd = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+    cx.simulate_keystrokes(&format!("{cmd}-,"));
+    assert!(view.read_with(cx, |m, _| m.settings_open));
+    cx.simulate_keystrokes("escape");
+    assert!(!view.read_with(cx, |m, _| m.settings_open));
+    cx.simulate_input("!");
+    assert_eq!(view.read_with(cx, |m, cx| m.dirty_tab_count(&path, cx)), 1, "typing after closing edits the file again");
+
+    // A new font size reaches editors that are already open and is remembered.
+    view.update(cx, |m, cx| m.set_font_size(16., cx));
+    let size_of_open = view.read_with(cx, |m, cx| match &m.active_tab().unwrap().body {
+        workspace::TabBody::File(e) => e.read(cx).font_size(),
+        _ => unreachable!(),
+    });
+    assert_eq!(size_of_open, 16.);
+    assert_eq!(config_in(&root).font_size(), 16.);
+    view.update(cx, |m, cx| m.set_font_size(99., cx));
+    assert_eq!(view.read_with(cx, |m, _| m.config.font_size()), madi_project::config::FONT_SIZE_RANGE.1);
+
+    // Focus mode hides the surrounding chrome and toggles back.
+    cx.simulate_keystrokes(&format!("{cmd}-alt-z"));
+    assert!(view.read_with(cx, |m, _| m.focus_mode));
+    cx.simulate_keystrokes(&format!("{cmd}-alt-z"));
+    assert!(!view.read_with(cx, |m, _| m.focus_mode));
 }

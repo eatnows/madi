@@ -23,19 +23,21 @@ use madi_git::{
 };
 
 use madi_project::{
-    config::{Appearance, Config},
+    config::{Appearance, Config, FONT_SIZE_RANGE},
     scan::Issue,
     tree::TreeRow,
 };
 
 use madi_ui::theme::*;
 
-use overlays::{BranchPickerState, Confirm, ConfirmAction, MenuTarget, PickerTarget};
+use overlays::{BranchPickerState, Confirm, ConfirmAction, MenuTarget, PickerTarget, SettingsTab};
 
-actions!(madi, [SelectPrev, SelectNext, PickerConfirm, PickerCancel, ModalCancel, TreeEnter, TreeExpand, TreeCollapse]);
+actions!(madi, [OpenSettings, ToggleFocusMode, SelectPrev, SelectNext, PickerConfirm, PickerCancel, ModalCancel, TreeEnter, TreeExpand, TreeCollapse]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new("secondary-alt-z", ToggleFocusMode, None),
         KeyBinding::new("up", SelectPrev, Some("NavList")),
         KeyBinding::new("down", SelectNext, Some("NavList")),
         KeyBinding::new("up", SelectPrev, Some("Picker")),
@@ -104,6 +106,10 @@ pub struct Madi {
     sidebar_width: f32,
     dragging: Option<(Resize, f32)>,
     git_open: bool,
+    settings_open: bool,
+    settings_tab: SettingsTab,
+    /// Hides the rail, sidebar, git panel and status bar so the open file or diff fills the window.
+    focus_mode: bool,
     git_panel: Entity<GitPanel>,
     _git_panel_events: Subscription,
 }
@@ -153,6 +159,9 @@ impl Madi {
             sidebar_width: 280.,
             dragging: None,
             git_open: false,
+            settings_open: false,
+            settings_tab: SettingsTab::General,
+            focus_mode: false,
             git_panel,
             _git_panel_events: git_panel_events,
         };
@@ -167,9 +176,34 @@ impl Madi {
         this
     }
 
-    fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
-        self.config.appearance = self.config.appearance.next();
+    fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
+        self.config.appearance = appearance;
         self.config.save();
+        cx.notify();
+    }
+
+    fn set_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        let (min, max) = FONT_SIZE_RANGE;
+        let size = size.clamp(min, max);
+        self.config.editor_font_size = Some(size);
+        self.config.save();
+        let editors: Vec<_> = self
+            .workspaces
+            .values()
+            .flat_map(|w| w.tabs.iter())
+            .filter_map(|t| match &t.body {
+                workspace::TabBody::File(e) => Some(e.clone()),
+                _ => None,
+            })
+            .collect();
+        for editor in editors {
+            editor.update(cx, |e, cx| e.set_font_size(size, cx));
+        }
+        cx.notify();
+    }
+
+    fn toggle_focus_mode(&mut self, cx: &mut Context<Self>) {
+        self.focus_mode = !self.focus_mode;
         cx.notify();
     }
 
@@ -304,6 +338,9 @@ impl Madi {
                 )
                 .into_any_element();
         }
+        if self.focus_mode {
+            return row().child(self.editor_area(viewport_w, cx)).into_any_element();
+        }
         // Room for a diff tab: the window minus the rail, the sidebar and its drag handle.
         let editor_width = viewport_w - 48. - self.sidebar_width - 5.;
         row()
@@ -347,6 +384,8 @@ impl Render for Madi {
             .size_full()
             .flex()
             .flex_col()
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleFocusMode, _, cx| this.toggle_focus_mode(cx)))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.open_paths(paths.paths(), window, cx)))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| this.on_mouse_move(ev, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_drag(cx)))
@@ -355,11 +394,19 @@ impl Render for Madi {
             .text_color(TEXT())
             .text_size(px(13.))
             .child(self.topbar(cx))
-            .child(div().flex_1().min_h_0().flex().child(self.rail(cx)).child(self.main_area(viewport_w, cx)))
-            .when(repo_ok && self.git_open, |d| d.child(self.git_panel.clone()))
-            .child(self.status_bar(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .when(!self.focus_mode, |d| d.child(self.rail(cx)))
+                    .child(self.main_area(viewport_w, cx)),
+            )
+            .when(repo_ok && self.git_open && !self.focus_mode, |d| d.child(self.git_panel.clone()))
+            .when(!self.focus_mode, |d| d.child(self.status_bar(cx)))
             .children(self.context_menu(cx))
             .children(self.confirm_modal(cx))
+            .children(self.settings_modal(cx))
             .children(self.picker_overlay(window, cx))
     }
 }

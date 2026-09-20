@@ -78,9 +78,8 @@ pub enum EditorEvent {
 
 impl gpui::EventEmitter<EditorEvent> for Editor {}
 
-pub const ROW_H: f32 = 20.0;
+pub const DEFAULT_FONT_SIZE: f32 = 13.0;
 const GUTTER_W: f32 = 56.0;
-const CHAR_W: f32 = 7.9;
 const PAGE_LINES: isize = 30;
 
 pub struct Editor {
@@ -95,6 +94,7 @@ pub struct Editor {
     reveal_cursor: bool,
     content_width: f32,
     width_revision: u64,
+    font_size: f32,
 }
 
 impl Editor {
@@ -110,7 +110,34 @@ impl Editor {
             reveal_cursor: false,
             content_width: 0.,
             width_revision: u64::MAX,
+            font_size: DEFAULT_FONT_SIZE,
         }
+    }
+
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.font_size = size;
+        self
+    }
+
+    pub fn font_size(&self) -> f32 {
+        self.font_size
+    }
+
+    pub fn set_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        if self.font_size != size {
+            self.font_size = size;
+            self.width_revision = u64::MAX;
+            cx.notify();
+        }
+    }
+
+    fn row_h(&self) -> f32 {
+        (self.font_size * 1.55).round()
+    }
+
+    /// Advance of one monospace column (Menlo is ~0.6 em wide).
+    fn char_w(&self) -> f32 {
+        self.font_size * 0.607
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -158,7 +185,7 @@ impl Editor {
                 .map(|r| self.doc.line(r).chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum::<usize>())
                 .max()
                 .unwrap_or(0);
-            self.content_width = GUTTER_W + cols as f32 * CHAR_W + 80.0;
+            self.content_width = GUTTER_W + cols as f32 * self.char_w() + 80.0;
             self.width_revision = self.doc.revision();
         }
         self.content_width
@@ -441,7 +468,7 @@ impl gpui::Element for LineElement {
     fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&gpui::InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = px(ROW_H).into();
+        style.size.height = px(self.editor.read(cx).row_h()).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -500,7 +527,8 @@ impl gpui::Element for LineElement {
             window.paint_quad(selection);
         }
         let line = prepaint.line.clone();
-        line.paint(bounds.origin, px(ROW_H), window, cx).unwrap();
+        let row_h = self.editor.read(cx).row_h();
+        line.paint(bounds.origin, px(row_h), window, cx).unwrap();
 
         let focused = self.editor.read(cx).focus_handle.is_focused(window);
         if focused {
@@ -542,6 +570,7 @@ impl Render for Editor {
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
         let width = self.content_width();
+        let row_h = self.row_h();
         let input_entity = entity.clone();
 
         let mut hscroll = div().id("editor-hscroll").size_full().overflow_x_scroll().track_scroll(&self.hscroll);
@@ -556,7 +585,7 @@ impl Render for Editor {
                         let _ = &this;
                         div()
                             .flex()
-                            .h(px(ROW_H))
+                            .h(px(row_h))
                             .child(
                                 div()
                                     .w(px(GUTTER_W))
@@ -619,8 +648,8 @@ impl Render for Editor {
             .size_full()
             .bg(BG())
             .font_family(MONO)
-            .text_size(px(13.))
-            .line_height(px(ROW_H))
+            .text_size(px(self.font_size))
+            .line_height(px(row_h))
             .text_color(TEXT())
             .child(
                 // Registers the platform text-input handler once per frame for the whole editor.

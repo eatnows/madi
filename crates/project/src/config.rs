@@ -15,13 +15,7 @@ pub enum Appearance {
 }
 
 impl Appearance {
-    pub fn next(self) -> Self {
-        match self {
-            Appearance::System => Appearance::Light,
-            Appearance::Light => Appearance::Dark,
-            Appearance::Dark => Appearance::System,
-        }
-    }
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -39,6 +33,8 @@ impl Appearance {
 #[serde(default)]
 pub struct Config {
     pub appearance: Appearance,
+    /// `None` until the user changes it; read through [`Config::font_size`].
+    pub editor_font_size: Option<f32>,
     pub projects: Vec<String>,
     pub last_project: Option<String>,
     /// repo path -> (worktree path -> base branch)
@@ -61,7 +57,15 @@ fn config_path() -> Option<PathBuf> {
     Some(dir.join("config.json"))
 }
 
+pub const DEFAULT_FONT_SIZE: f32 = 13.0;
+pub const FONT_SIZE_RANGE: (f32, f32) = (10.0, 24.0);
+
 impl Config {
+    /// The editor's font size, kept inside a range the layout copes with even if the file was edited by hand.
+    pub fn font_size(&self) -> f32 {
+        self.editor_font_size.unwrap_or(DEFAULT_FONT_SIZE).clamp(FONT_SIZE_RANGE.0, FONT_SIZE_RANGE.1)
+    }
+
     pub fn load() -> Self {
         Self::at(config_path())
     }
@@ -104,5 +108,15 @@ mod tests {
         assert_eq!(config.projects, ["/a", "/b"]);
         assert_eq!(config.appearance, Appearance::Dark);
         assert!(config.pins.is_empty() && config.last_project.is_none());
+        assert_eq!(config.font_size(), DEFAULT_FONT_SIZE);
+    }
+
+    #[test]
+    fn the_font_size_is_clamped_to_a_usable_range() {
+        let mut config = Config::at(None);
+        config.editor_font_size = Some(200.0);
+        assert_eq!(config.font_size(), FONT_SIZE_RANGE.1);
+        config.editor_font_size = Some(1.0);
+        assert_eq!(config.font_size(), FONT_SIZE_RANGE.0);
     }
 }
