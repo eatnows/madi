@@ -140,10 +140,8 @@ impl Madi {
             // A file: open its folder as the project and the file in a tab.
             Some(path) if Path::new(&path).is_file() => {
                 let file = PathBuf::from(&path);
-                if let Some(dir) = file.parent() {
-                    app.open_project(dir.to_string_lossy().into_owned());
-                    app.open_file(file, false);
-                }
+                // A standalone file belongs to the loose-files workspace, never to the saved project list.
+                app.open_file(file, false);
             }
             initial => {
                 if let Some(path) = initial.or_else(|| app.config.last_project.clone()) {
@@ -455,6 +453,9 @@ impl Madi {
 
     /// The window heading: what is open (bold) and where it lives (dim).
     pub fn title_parts(&self) -> (String, String) {
+        if self.repo.is_empty() {
+            return self.active_tab().map(|tab| (tab.title.clone(), tab.path.parent().map(|p| p.display().to_string()).unwrap_or_default())).unwrap_or_else(|| ("Madi".into(), String::new()));
+        }
         let project = Self::project_name(&self.repo);
         if let Some(diff) = self.workspace().filter(|ws| ws.showing_diff).and_then(|ws| ws.diff.as_ref()) {
             return (diff.title.clone(), format!("{project} · diff"));
@@ -1272,5 +1273,17 @@ mod tests {
         host.frame();
         assert_eq!(host.state().repo, extra.to_string_lossy());
         assert!(host.state().config.projects.iter().any(|p| p == &extra.to_string_lossy()));
+    }
+
+    #[test]
+    fn a_single_file_opens_without_becoming_a_project() {
+        let root = std::env::temp_dir().join("madi-gyeol-test-loose-file");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("note.txt");
+        std::fs::write(&file, "loose\n").unwrap();
+        let config = Config::at(Some(root.join("config.json")));
+        let host = TestHost::new(Madi::new(Some(file.to_string_lossy().into_owned()), config), (800., 600.));
+        assert!(host.state().repo.is_empty() && host.state().config.projects.is_empty());
+        assert!(has_text(&host, "loose"));
     }
 }
