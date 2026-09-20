@@ -90,6 +90,8 @@ pub struct Madi {
     pub graph_commits: Vec<CommitInfo>,
     pub graph_rows: Vec<GraphRow>,
     pub graph_branch: String,
+    pub graph_selected: Option<usize>,
+    pub graph_files: Vec<FileDiff>,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
     pub blink_epoch: Instant,
@@ -120,6 +122,8 @@ impl Madi {
             graph_commits: Vec::new(),
             graph_rows: Vec::new(),
             graph_branch: String::new(),
+            graph_selected: None,
+            graph_files: Vec::new(),
             error: None,
             blink_epoch: Instant::now(),
             window_focused: true,
@@ -165,9 +169,27 @@ impl Madi {
             .or_else(|| self.worktrees.iter().find(|w| w.is_main).and_then(|w| w.branch.clone()));
         let Some(branch) = branch else { self.error = Some("No git branch to show".into()); return };
         match git_log::git_log(self.repo.clone(), branch.clone(), 0, 300) {
-            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.git_graph_open = true; }
+            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.graph_selected = None; self.graph_files.clear(); self.git_graph_open = true; }
             Err(reason) => self.error = Some(format!("Can't load git graph: {reason}")),
         }
+    }
+
+    fn select_graph_commit(&mut self, ix: usize) {
+        if self.graph_selected == Some(ix) { self.graph_selected = None; self.graph_files.clear(); return; }
+        let Some(commit) = self.graph_commits.get(ix) else { return };
+        self.graph_selected = Some(ix);
+        match diff::diff_commit(self.repo.clone(), commit.oid.clone()) {
+            Ok(files) => self.graph_files = files,
+            Err(reason) => self.error = Some(format!("Can't load commit changes: {reason}")),
+        }
+    }
+
+    fn open_graph_file(&mut self, ix: usize) {
+        let Some(file) = self.graph_files.get(ix) else { return };
+        let copied = FileDiff { path: file.path.clone(), status: file.status.clone(), additions: file.additions, deletions: file.deletions, section: file.section, binary: file.binary, lines: file.lines.iter().map(|line| madi_git::diff::DiffLine { tag: line.tag, old_lineno: line.old_lineno, new_lineno: line.new_lineno, segments: line.segments.iter().map(|s| madi_git::diff::Segment { text: s.text.clone(), emphasized: s.emphasized }).collect(), skipped: line.skipped }).collect() };
+        let ws = self.workspace_mut();
+        ws.diff = Some(DiffTab { title: copied.path.clone(), file: copied });
+        ws.showing_diff = true;
     }
 
     fn add_project(&mut self) {
@@ -664,16 +686,20 @@ impl Madi {
                 lanes = lanes.child(div().absolute().left(10. + lane as f32 * 16.).top(0.).w(2.).h(32.).bg(colors[lane % 4]));
             }
             lanes = lanes.child(div().absolute().left(lane_x - 4.).top(12.).size(10.).rounded(5.).bg(colors[row.lane % 4]));
-            div().row().items_center().h(32.).px(12.).gap(10.).min_w(760.).hover_bg(p.selected)
+            div().row().items_center().h(32.).px(12.).gap(10.).min_w(760.).bg(if self.graph_selected == Some(i) { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.select_graph_commit(i))
                 .child(lanes)
                 .child(text(commit.summary.clone()).text_size(12.).text_color(p.text_strong).grow())
                 .child(text(commit.author_name.clone()).text_size(11.).text_color(p.text_dim).w(120.))
                 .child(text(time::relative(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64), commit.timestamp)).text_size(11.).text_color(p.text_dim).w(70.))
                 .child(text(commit.short_oid.clone()).text_size(11.).text_family(editor::MONO).text_color(p.text_dim).w(64.))
         }).grow().scrollbar(p.text_dim.with_alpha(0.4));
-        div().h(250.).border(1., p.border).bg(p.panel)
+        let detail = self.graph_selected.and_then(|i| self.graph_commits.get(i)).map(|commit| {
+            let files = self.graph_files.iter().enumerate().map(|(i, file)| div().row().px(12.).py(3.).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.open_graph_file(i)).child(text(file.path.clone()).text_size(11.).text_color(p.text)).child(div().grow()).child(text(format!("+{} −{}", file.additions, file.deletions)).text_size(10.).text_color(p.text_dim)));
+            div().max_h(120.).overflow_y_scroll().child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(5.).child(text(commit.summary.clone()).text_size(12.).text_color(p.text_strong))).child(div().children(files))
+        });
+        div().h(320.).border(1., p.border).bg(p.panel)
             .child(div().row().items_center().h(34.).px(12.).child(text(format!("Graph · {}", self.graph_branch)).text_size(12.).text_color(p.text_strong)).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
-            .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.)))
+            .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.))).children(detail)
     }
 
     fn main_area(&self, cx: &mut Cx, p: &Palette) -> El {
