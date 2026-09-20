@@ -6,7 +6,14 @@ use std::{
 };
 
 use gyeol::{div, paths, text, uniform_list, Color, Cx, Element, Event, NamedKey, Path as DrawPath, SystemTheme, View};
-use madi_git::{diff::{self, FileDiff}, git_log::{self, CommitInfo}, graph::{compute_rows, GraphRow}, time, worktree::WorktreeInfo};
+use madi_git::{
+    branches::{self, BranchRow},
+    diff::{self, FileDiff},
+    git_log::{self, CommitInfo},
+    graph::{compute_rows, GraphRow},
+    time,
+    worktree::WorktreeInfo,
+};
 use madi_project::{
     config::{Appearance, Config},
     scan::{scan_repo, Issue, ScanOutcome},
@@ -38,6 +45,20 @@ pub enum SidebarView {
 pub enum Focus {
     Tree,
     Editor,
+}
+
+#[derive(Clone, Copy)]
+enum BranchPickerTarget {
+    WorktreeBase(usize),
+    Graph,
+}
+
+struct BranchPicker {
+    target: BranchPickerTarget,
+    anchor: (f32, f32),
+    query: String,
+    collapsed: HashSet<String>,
+    highlighted: usize,
 }
 
 pub struct Tab {
@@ -80,7 +101,7 @@ pub struct Madi {
     pub selected_worktree: Option<usize>,
     pub selected_change: Option<usize>,
     pub worktree_issue: Option<Issue>,
-    pub worktree_base_picker: Option<usize>,
+    branch_picker: Option<BranchPicker>,
     pub worktree_remove_confirm: Option<String>,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
@@ -96,7 +117,7 @@ pub struct Madi {
     pub graph_branch: String,
     pub graph_selected: Option<usize>,
     pub graph_files: Vec<FileDiff>,
-    pub graph_picker_open: bool,
+    pub graph_file_selected: Option<usize>,
     pub graph_follow: bool,
     /// The last failure to show in the top bar (a file that can't be opened or saved).
     pub error: Option<String>,
@@ -120,7 +141,7 @@ impl Madi {
             selected_worktree: None,
             selected_change: None,
             worktree_issue: None,
-            worktree_base_picker: None,
+            branch_picker: None,
             worktree_remove_confirm: None,
             focus_mode: false,
             focus: Focus::Tree,
@@ -134,7 +155,7 @@ impl Madi {
             graph_branch: String::new(),
             graph_selected: None,
             graph_files: Vec::new(),
-            graph_picker_open: false,
+            graph_file_selected: None,
             graph_follow: true,
             error: None,
             blink_epoch: Instant::now(),
@@ -184,17 +205,20 @@ impl Madi {
 
     fn load_graph(&mut self, branch: String) {
         match git_log::git_log(self.repo.clone(), branch.clone(), 0, 300) {
-            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.graph_selected = None; self.graph_files.clear(); self.graph_picker_open = false; self.git_graph_open = true; }
+            Ok(commits) => { self.graph_rows = compute_rows(&commits); self.graph_commits = commits; self.graph_branch = branch; self.graph_selected = None; self.graph_files.clear(); self.graph_file_selected = None; self.branch_picker = None; self.git_graph_open = true; }
             Err(reason) => self.error = Some(format!("Can't load git graph: {reason}")),
         }
     }
 
     fn select_graph_commit(&mut self, ix: usize) {
-        if self.graph_selected == Some(ix) { self.graph_selected = None; self.graph_files.clear(); return; }
+        if self.graph_selected == Some(ix) { self.graph_selected = None; self.graph_files.clear(); self.graph_file_selected = None; return; }
         let Some(commit) = self.graph_commits.get(ix) else { return };
         self.graph_selected = Some(ix);
         match diff::diff_commit(self.repo.clone(), commit.oid.clone()) {
-            Ok(files) => self.graph_files = files,
+            Ok(files) => {
+                self.graph_file_selected = (!files.is_empty()).then_some(0);
+                self.graph_files = files;
+            }
             Err(reason) => self.error = Some(format!("Can't load commit changes: {reason}")),
         }
     }
@@ -206,12 +230,10 @@ impl Madi {
         if self.graph_selected != Some(next) { self.select_graph_commit(next); }
     }
 
-    fn open_graph_file(&mut self, ix: usize) {
-        let Some(file) = self.graph_files.get(ix) else { return };
-        let copied = FileDiff { path: file.path.clone(), status: file.status.clone(), additions: file.additions, deletions: file.deletions, section: file.section, binary: file.binary, lines: file.lines.iter().map(|line| madi_git::diff::DiffLine { tag: line.tag, old_lineno: line.old_lineno, new_lineno: line.new_lineno, segments: line.segments.iter().map(|s| madi_git::diff::Segment { text: s.text.clone(), emphasized: s.emphasized }).collect(), skipped: line.skipped }).collect() };
-        let ws = self.workspace_mut();
-        ws.diff = Some(DiffTab { title: copied.path.clone(), file: copied });
-        ws.showing_diff = true;
+    fn select_graph_file(&mut self, ix: usize) {
+        if ix < self.graph_files.len() {
+            self.graph_file_selected = Some(ix);
+        }
     }
 
     fn add_project(&mut self) {
@@ -424,9 +446,86 @@ impl Madi {
         self.pins.insert(worktree.path.clone(), branch);
         self.config.pins.insert(self.repo.clone(), self.pins.clone());
         self.config.save();
-        self.worktree_base_picker = None;
+        self.branch_picker = None;
         self.refresh_worktrees();
         self.select_worktree(ix);
+    }
+
+    fn open_branch_picker(&mut self, target: BranchPickerTarget, anchor: (f32, f32)) {
+        self.branch_picker = Some(BranchPicker { target, anchor, query: String::new(), collapsed: HashSet::new(), highlighted: 0 });
+    }
+
+    fn picker_rows(&self) -> Vec<BranchRow> {
+        self.branch_picker.as_ref().map_or_else(Vec::new, |picker| branches::flatten(&self.branches, &picker.collapsed, &picker.query))
+    }
+
+    fn activate_picker(&mut self, row: usize) {
+        let Some(picked) = self.picker_rows().into_iter().nth(row) else { return };
+        match picked {
+            BranchRow::Folder { full_path, .. } => {
+                let Some(picker) = &mut self.branch_picker else { return };
+                if !picker.collapsed.remove(&full_path) {
+                    picker.collapsed.insert(full_path);
+                }
+            }
+            BranchRow::Branch { full_path, .. } => {
+                let Some(target) = self.branch_picker.as_ref().map(|picker| picker.target) else { return };
+                match target {
+                    BranchPickerTarget::WorktreeBase(ix) => self.set_worktree_base(ix, full_path),
+                    BranchPickerTarget::Graph => {
+                        self.graph_follow = false;
+                        self.load_graph(full_path);
+                    }
+                }
+            }
+        }
+    }
+
+    fn picker_key(&mut self, key: &gyeol::Key, text: Option<&str>, cx: &Cx) -> bool {
+        if self.branch_picker.is_none() {
+            return false;
+        }
+        match key {
+            gyeol::Key::Named(NamedKey::Escape) => self.branch_picker = None,
+            gyeol::Key::Named(NamedKey::Enter) => {
+                let highlighted = self.branch_picker.as_ref().map(|picker| picker.highlighted).unwrap_or(0);
+                self.activate_picker(highlighted);
+            }
+            gyeol::Key::Named(NamedKey::ArrowUp) => {
+                if let Some(picker) = &mut self.branch_picker {
+                    picker.highlighted = picker.highlighted.saturating_sub(1);
+                }
+            }
+            gyeol::Key::Named(NamedKey::ArrowDown) => {
+                let last = self.picker_rows().len().saturating_sub(1);
+                if let Some(picker) = &mut self.branch_picker {
+                    picker.highlighted = (picker.highlighted + 1).min(last);
+                }
+            }
+            gyeol::Key::Named(NamedKey::Backspace) => {
+                if let Some(picker) = &mut self.branch_picker {
+                    picker.query.pop();
+                    picker.highlighted = 0;
+                }
+            }
+            _ if !cx.modifiers.command() => {
+                if let (Some(input), Some(picker)) = (text, &mut self.branch_picker) {
+                    picker.query.push_str(input);
+                    picker.highlighted = 0;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn picker_ime(&mut self, ime: &gyeol::Ime) -> bool {
+        let Some(picker) = &mut self.branch_picker else { return false };
+        if let gyeol::Ime::Commit(input) = ime {
+            picker.query.push_str(input);
+            picker.highlighted = 0;
+        }
+        true
     }
 
     fn remove_worktree(&mut self, path: String) {
@@ -638,18 +737,12 @@ impl Madi {
                 .on_click(move |s: &mut Madi, _| s.select_worktree(i))
                 .child(text(wt.name.clone()).text_size(12.).text_color(p.text_strong))
                 .child(text(format!("{branch}  {status}")).text_size(11.).text_color(p.text_dim))
-                .child(div().px(4.).rounded(4.).hover_bg(p.border).on_click(move |s: &mut Madi, _| {
-                    s.worktree_base_picker = (s.worktree_base_picker != Some(i)).then_some(i);
+                .child(div().px(4.).rounded(4.).hover_bg(p.border).on_mouse_down(move |s: &mut Madi, _, event| {
+                    if event.button == gyeol::MouseButton::Left {
+                        s.open_branch_picker(BranchPickerTarget::WorktreeBase(i), event.pos);
+                    }
                 }).child(text(format!("base: {base} ⌄")).text_size(10.).text_color(p.text_dim)))
         }).h(220.).p(8.).scrollbar(p.text_dim.with_alpha(0.4));
-        let base_picker = self.worktree_base_picker.and_then(|ix| self.worktrees.get(ix).map(|wt| (ix, wt.name.clone()))).map(|(ix, name)| {
-            let branches = self.branches.iter().cloned().map(|branch| { let target = branch.clone(); div().px(7.).py(3.).rounded(4.).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.set_worktree_base(ix, target.clone())).child(text(branch).text_size(11.).text_color(p.text_dim)) });
-            // This stays out of the list's layout so a long branch list is a proper popover,
-            // rather than pushing the changes pane down.
-            div().absolute().left(14.).top((8. + ix as f32 * 62. + 47.).min(205.)).w(248.).max_h(180.).overflow_y_scroll().p(6.).gap(2.).rounded(6.).border(1., p.border).bg(p.bg)
-                .child(text(format!("Base branch for {name}")).px(5.).py(3.).text_size(11.).text_color(p.text_strong))
-                .children(branches)
-        });
         let changes_title = self.selected_worktree.and_then(|i| self.worktrees.get(i)).map(|wt| format!("CHANGES · vs {}", self.pins.get(&wt.path).cloned().unwrap_or_default())).unwrap_or_else(|| "CHANGES".into());
         let changes = if self.selected_worktree.is_none() {
             div().grow().p(16.).child(text("Select a worktree to see its changes").text_size(12.).text_color(p.text_dim))
@@ -667,7 +760,7 @@ impl Madi {
                     .child(text(counts).text_size(11.).text_color(p.text_dim))
             }).grow().p(8.).scrollbar(p.text_dim.with_alpha(0.4))
         };
-        div().grow().child(worktrees).children(base_picker).child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(8.).child(text(changes_title).text_size(11.).text_color(p.text_dim))).child(div().h(1.).bg(p.border_soft)).child(changes)
+        div().grow().child(worktrees).child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(8.).child(text(changes_title).text_size(11.).text_color(p.text_dim))).child(div().h(1.).bg(p.border_soft)).child(changes)
     }
 
     fn sidebar(&self, cx: &Cx, p: &Palette) -> El {
@@ -778,6 +871,39 @@ impl Madi {
         div().id(("diff-x", &self.repo, &path)).grow().overflow_x_scroll().child(div().w(min_width).h_full().child(rows.w(min_width)))
     }
 
+    fn graph_diff_cell(cell: Option<&madi_git::diff_layout::Cell>, p: &Palette, width: f32) -> El {
+        let (bg, fg) = match cell.map(|cell| cell.tag) {
+            Some("insert") => (p.add_bg, p.add_fg),
+            Some("delete") => (p.del_bg, p.del_fg),
+            _ => (Color::TRANSPARENT, p.text),
+        };
+        let line = cell.and_then(|cell| cell.lineno).map(|line| line.to_string()).unwrap_or_default();
+        let content = cell.map(|cell| cell.text.to_string()).unwrap_or_default();
+        div().row().items_center().w(width).h(20.).bg(bg)
+            .child(div().w(42.).px(6.).justify_end().child(text(line).text_size(10.).text_color(p.text_dim)))
+            .child(text(content).text_size(11.).text_family(editor::MONO).text_color(fg))
+    }
+
+    fn graph_diff_view(&self, cx: &Cx, p: &Palette, file: &FileDiff) -> El {
+        if file.binary {
+            return div().grow().items_center().justify_center().child(text("Binary file — diff is unavailable").text_size(12.).text_color(p.text_dim));
+        }
+        let layout = madi_git::diff_layout::DiffLayout::new(&file.lines);
+        let half_width = (62. + layout.widest_line(false) as f32 * self.config.font_size() * 0.62).max(300.);
+        let full_width = half_width * 2.;
+        let path = file.path.clone();
+        let rows = uniform_list(cx, ("graph-diff", &self.repo, &path), layout.split.len(), 20., |ix| {
+            match &layout.split[ix] {
+                madi_git::diff_layout::Row::Gap => div().w(full_width).h(20.).items_center().justify_center().bg(p.panel).child(text("⋯ unchanged ⋯").text_size(10.).text_color(p.text_dim)),
+                madi_git::diff_layout::Row::Pair(old, new) => div().row().w(full_width).h(20.)
+                    .child(Self::graph_diff_cell(old.as_ref(), p, half_width))
+                    .child(div().w(1.).h_full().bg(p.border))
+                    .child(Self::graph_diff_cell(new.as_ref(), p, half_width)),
+            }
+        }).grow().scrollbar(p.text_dim.with_alpha(0.4));
+        div().id(("graph-diff-x", &self.repo, &path)).grow().overflow_x_scroll().child(div().w(full_width).h_full().child(rows.w(full_width)))
+    }
+
     fn graph_view(&self, cx: &Cx, p: &Palette) -> El {
         let rows = uniform_list(cx, ("git-graph", &self.repo), self.graph_commits.len(), 32., |i| {
             let commit = &self.graph_commits[i];
@@ -813,21 +939,69 @@ impl Madi {
                 .child(text(time::relative(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64), commit.timestamp)).text_size(11.).text_color(p.text_dim).w(70.))
                 .child(text(commit.short_oid.clone()).text_size(11.).text_family(editor::MONO).text_color(p.text_dim).w(64.))
         }).grow().scrollbar(p.text_dim.with_alpha(0.4));
-        let detail = self.graph_selected.and_then(|i| self.graph_commits.get(i)).map(|commit| {
-            let files = self.graph_files.iter().enumerate().map(|(i, file)| div().row().px(12.).py(3.).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.open_graph_file(i)).child(text(file.path.clone()).text_size(11.).text_color(p.text)).child(div().grow()).child(text(format!("+{} −{}", file.additions, file.deletions)).text_size(10.).text_color(p.text_dim)));
-            div().max_h(120.).overflow_y_scroll().child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(5.).child(text(commit.summary.clone()).text_size(12.).text_color(p.text_strong))).child(div().children(files))
+        let changes = if self.graph_selected.is_none() {
+            div().grow().items_center().justify_center().child(text("Select a commit to see its changed files").text_size(12.).text_color(p.text_dim))
+        } else {
+            let files = uniform_list(cx, ("graph-files", &self.repo), self.graph_files.len(), 24., |ix| {
+                let file = &self.graph_files[ix];
+                let selected = self.graph_file_selected == Some(ix);
+                div().row().items_center().px(8.).rounded(4.).bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
+                    .on_click(move |s: &mut Madi, _| s.select_graph_file(ix))
+                    .child(text(file.path.clone()).text_size(11.).text_color(p.text).grow())
+                    .child(text(format!("+{} −{}", file.additions, file.deletions)).text_size(10.).text_color(p.text_dim))
+            }).grow().p(6.).scrollbar(p.text_dim.with_alpha(0.4));
+            let diff = self.graph_file_selected.and_then(|ix| self.graph_files.get(ix)).map_or_else(
+                || div().grow().items_center().justify_center().child(text("Select a changed file").text_size(12.).text_color(p.text_dim)),
+                |file| self.graph_diff_view(cx, p, file),
+            );
+            div().row().grow().child(div().w(220.).h_full().border(1., p.border_soft).child(files)).child(diff)
+        };
+        div().h(380.).border(1., p.border).bg(p.panel)
+            .child(div().row().items_center().h(34.).px(12.).child(div().px(6.).rounded(5.).hover_bg(p.selected).on_mouse_down(|s: &mut Madi, _, event| {
+                if event.button == gyeol::MouseButton::Left {
+                    s.open_branch_picker(BranchPickerTarget::Graph, event.pos);
+                }
+            }).child(text(format!("Graph · {} ⌄", self.graph_branch)).text_size(12.).text_color(p.text_strong))).child(text(if self.graph_follow { "following worktree" } else { "pinned" }).text_size(10.).text_color(if self.graph_follow { p.green } else { p.amber })).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
+            .child(div().h(1.).bg(p.border)).child(div().row().grow()
+                .child(div().w(430.).h_full().border(1., p.border_soft).child(div().grow().overflow_x_scroll().child(rows.w(760.))))
+                .child(changes))
+    }
+
+    /// The shared branch picker from the GPUI app: typed filtering, slash-grouped folders and
+    /// arrow/enter keyboard navigation. The state stays at the root so it can float above either
+    /// the sidebar base button or the graph's branch selector.
+    fn branch_picker_view(&self, p: &Palette) -> Option<El> {
+        let picker = self.branch_picker.as_ref()?;
+        let current = match picker.target {
+            BranchPickerTarget::WorktreeBase(ix) => self.worktrees.get(ix).and_then(|worktree| self.pins.get(&worktree.path)).cloned().unwrap_or_default(),
+            BranchPickerTarget::Graph => self.graph_branch.clone(),
+        };
+        let query = picker.query.clone();
+        let rows = self.picker_rows().into_iter().enumerate().map(|(ix, row)| {
+            let highlighted = picker.highlighted == ix;
+            let base = div().row().items_center().h(26.).px(6.).rounded(4.)
+                .bg(if highlighted { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
+                .on_click(move |s: &mut Madi, _| s.activate_picker(ix));
+            match row {
+                BranchRow::Folder { full_path, segment, depth } => {
+                    let open = !picker.collapsed.contains(&full_path) || !query.is_empty();
+                    base.child(div().w(8. + depth as f32 * 14.)).child(text(if open { "▾" } else { "▸" }).text_size(10.).text_color(p.text_dim)).child(text(segment).text_size(11.).text_family(editor::MONO).text_color(p.text_dim))
+                }
+                BranchRow::Branch { full_path, depth } => {
+                    let label = full_path.rsplit('/').next().unwrap_or(&full_path).to_string();
+                    let chosen = full_path == current;
+                    base.child(div().w(22. + depth as f32 * 14.)).child(text(label).text_size(11.).text_family(editor::MONO).text_color(p.text_strong)).child(div().grow()).child(if chosen { text("✓").text_size(11.).text_color(p.green) } else { text("") })
+                }
+            }
         });
-        let branches = self.branches.iter().cloned().map(|branch| {
-            let selected = branch == self.graph_branch;
-            let target = branch.clone();
-            div().px(8.).py(4.).rounded(5.).bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| { s.graph_follow = false; s.load_graph(target.clone()) }).child(text(branch).text_size(11.).text_color(if selected { p.text_strong } else { p.text_dim }))
-        });
-        let picker = self.graph_picker_open.then(|| {
-            div().absolute().left(12.).top(32.).w(248.).max_h(210.).overflow_y_scroll().p(6.).gap(2.).rounded(6.).border(1., p.border).bg(p.bg).children(branches)
-        });
-        div().h(320.).border(1., p.border).bg(p.panel)
-            .child(div().row().items_center().h(34.).px(12.).child(div().px(6.).rounded(5.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.graph_picker_open = !s.graph_picker_open).child(text(format!("Graph · {} ⌄", self.graph_branch)).text_size(12.).text_color(p.text_strong))).child(text(if self.graph_follow { "following worktree" } else { "pinned" }).text_size(10.).text_color(if self.graph_follow { p.green } else { p.amber })).child(div().grow()).child(div().px(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.git_graph_open = false).child(text("×").text_color(p.text_dim))))
-            .child(div().h(1.).bg(p.border)).child(div().grow().overflow_x_scroll().child(rows.w(760.))).children(detail).children(picker)
+        let search = if query.is_empty() { text("Search branches").text_size(11.).text_color(p.text_dim) } else { text(format!("{query}│")).text_size(11.).text_family(editor::MONO).text_color(p.text_strong) };
+        Some(
+            div().inset(0.).on_click(|s: &mut Madi, _| s.branch_picker = None).child(
+                div().absolute().left(picker.anchor.0).top(picker.anchor.1 + 8.).w(260.).max_h(340.).rounded(6.).border(1., p.border).bg(p.chrome).on_click(|_: &mut Madi, _| {})
+                    .child(div().h(31.).px(9.).items_center().border(1., p.border_soft).child(search))
+                    .child(div().max_h(300.).overflow_y_scroll().p(4.).gap(1.).children(rows)),
+            ),
+        )
     }
 
     fn main_area(&self, cx: &mut Cx, p: &Palette) -> El {
@@ -896,13 +1070,19 @@ impl View for Madi {
         if let Some(confirm) = self.worktree_remove_modal(&p) {
             root = root.child(confirm);
         }
+        if let Some(picker) = self.branch_picker_view(&p) {
+            root = root.child(picker);
+        }
         root
     }
 
     fn event(&mut self, event: &Event, cx: &mut Cx) {
         match event {
             Event::FocusChanged(focused) => self.window_focused = *focused,
-            Event::KeyDown { key, .. } => {
+            Event::KeyDown { key, text, .. } => {
+                if self.picker_key(key, text.as_deref(), cx) {
+                    return;
+                }
                 if self.git_graph_open {
                     match key {
                         gyeol::Key::Named(NamedKey::ArrowUp) => { self.move_graph_commit(-1); return; }
@@ -923,6 +1103,7 @@ impl View for Madi {
                 }
                 self.editor_event(event, cx);
             }
+            Event::Ime(ime) if self.picker_ime(ime) => {}
             _ if !self.settings_open && self.close_confirm.is_none() => self.editor_event(event, cx),
             _ => {}
         }
@@ -1310,6 +1491,11 @@ mod tests {
         host.click_text("Graph");
         assert!(host.state().git_graph_open && !host.state().graph_commits.is_empty());
         assert!(host.scene().paths().count() > 0, "graph rows paint stroked lane paths");
+        host.state_mut().select_graph_commit(0);
+        host.frame();
+        assert!(!host.state().graph_files.is_empty() && host.state().graph_file_selected == Some(0));
+        assert!(host.state().workspace().is_none_or(|workspace| !workspace.showing_diff), "a commit file stays in the lower graph panel, not the main editor");
+        assert!(has_text(&host, "base"), "the old side of the split diff is visible");
         host.click_text("×");
         host.click_text("Worktrees");
         assert!(has_text(&host, "(main)") && has_text(&host, "feature"));
@@ -1320,6 +1506,22 @@ mod tests {
         assert!(has_text(&host, &("line 000 ".to_owned() + &long)));
         let visible = host.scene().texts().filter(|text| text.content.starts_with("line ")).count();
         assert!(visible < 80, "the diff list should only build rows near the viewport");
+    }
+
+    #[test]
+    fn branch_picker_searches_and_groups_slash_names() {
+        let (mut host, _, _) = app("branch-picker");
+        host.state_mut().branches = vec!["main".into(), "feature/alpha".into(), "feature/beta".into()];
+        host.state_mut().open_branch_picker(BranchPickerTarget::Graph, (90., 80.));
+        host.frame();
+        assert!(has_text(&host, "feature") && has_text(&host, "alpha") && has_text(&host, "beta"));
+        host.click_text("feature");
+        assert!(!has_text(&host, "alpha") && !has_text(&host, "beta"), "a slash group collapses");
+        host.click_text("feature");
+        host.key(gyeol::Key::Char("b".into()), Some("b"));
+        host.key(gyeol::Key::Char("e".into()), Some("e"));
+        host.key(gyeol::Key::Char("t".into()), Some("t"));
+        assert!(has_text(&host, "beta") && !has_text(&host, "alpha"), "typing filters the grouped list");
     }
 
     #[test]
