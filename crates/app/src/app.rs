@@ -431,6 +431,7 @@ impl Madi {
             ws.expanded.insert(path.to_path_buf());
         }
         self.refresh_tree();
+        self.save_session();
     }
 
     pub fn select(&mut self, path: PathBuf) {
@@ -484,12 +485,16 @@ impl Madi {
 
     fn quick_open_results(&self) -> Vec<PathBuf> {
         let query = self.quick_open.as_ref().map_or("", |picker| picker.query.as_str()).to_lowercase();
-        self.project_files().into_iter().filter(|path| {
+        let mut files: Vec<PathBuf> = self.project_files().into_iter().filter(|path| {
             let label = path.strip_prefix(&self.repo).unwrap_or(path).to_string_lossy().to_lowercase();
             query.chars().fold(Some(0usize), |offset, needle| {
                 offset.and_then(|start| label[start..].find(needle).map(|index| start + index + needle.len_utf8()))
             }).is_some()
-        }).collect()
+        }).collect();
+        // Recently opened files first (most recent on top); the rest keep their alphabetical order.
+        let recent = self.config.recent.get(&self.repo).map(Vec::as_slice).unwrap_or_default();
+        files.sort_by_key(|path| recent.iter().position(|r| Path::new(r) == path).unwrap_or(usize::MAX));
+        files
     }
 
     fn activate_quick_open(&mut self, row: usize) {
@@ -610,6 +615,7 @@ impl Madi {
         let session = Session {
             tabs: ws.tabs.iter().map(|t| t.path.to_string_lossy().into_owned()).collect(),
             active: ws.active.and_then(|i| ws.tabs.get(i)).map(|t| t.path.to_string_lossy().into_owned()),
+            expanded: { let mut dirs: Vec<String> = ws.expanded.iter().map(|d| d.to_string_lossy().into_owned()).collect(); dirs.sort(); dirs },
         };
         if self.config.sessions.get(&self.repo) != Some(&session) {
             self.config.sessions.insert(self.repo.clone(), session);
@@ -620,6 +626,7 @@ impl Madi {
     /// Reopens the tabs a project had last time; files that vanished or can't be read are skipped.
     fn restore_session(&mut self) {
         let Some(session) = self.config.sessions.get(&self.repo).cloned() else { return };
+        self.workspace_mut().expanded = session.expanded.iter().map(PathBuf::from).filter(|d| d.is_dir()).collect();
         for tab in &session.tabs {
             let path = PathBuf::from(tab);
             if path.is_file() {
@@ -634,6 +641,9 @@ impl Madi {
     }
 
     pub fn open_file(&mut self, path: PathBuf, preview: bool) {
+        if !self.repo.is_empty() {
+            self.config.touch_recent(&self.repo, &path.to_string_lossy());
+        }
         self.open_tab(path, preview);
         self.save_session();
     }
@@ -2029,6 +2039,26 @@ mod tests {
         press(&mut host, Key::Named(NamedKey::Enter));
         assert!(host.state().quick_open.is_none());
         assert_eq!(host.state().active_tab().map(|tab| tab.title.as_str()), Some("main.rs"));
+    }
+
+    #[test]
+    fn quick_open_lists_recently_opened_files_first() {
+        let (mut host, _, path) = app("quick-recent");
+        let proj = Path::new(&path);
+        host.state_mut().open_file(proj.join("src/lib.rs"), false);
+        host.state_mut().open_file(proj.join("src/main.rs"), false);
+        host.state_mut().open_file(proj.join("src/lib.rs"), false);
+        shortcut(&mut host, "p");
+        let names: Vec<String> = host.state().quick_open_results().iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["lib.rs", "main.rs", "README.md"], "most recent first, then the rest by path");
+    }
+
+    #[test]
+    fn expanded_folders_come_back_on_the_next_launch() {
+        let (mut host, root, path) = app("session-folders");
+        host.click_text("src");
+        let relaunched = Madi::new(Some(path), Config::at(Some(root.join("config.json"))));
+        assert!(relaunched.tree_rows.iter().any(|r| r.name == "main.rs"), "src is still expanded");
     }
 
     #[test]

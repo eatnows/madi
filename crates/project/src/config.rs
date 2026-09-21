@@ -32,6 +32,8 @@ impl Appearance {
 pub struct Session {
     pub tabs: Vec<String>,
     pub active: Option<String>,
+    /// Folders open in the file tree.
+    pub expanded: Vec<String>,
 }
 
 /// `default` on the whole struct: a config missing a field (older file, hand-edited, or written by a
@@ -49,6 +51,8 @@ pub struct Config {
     pub pins: HashMap<String, HashMap<String, String>>,
     /// repo path -> its open tabs
     pub sessions: HashMap<String, Session>,
+    /// repo path -> files opened most recently first (see [`RECENT_LIMIT`])
+    pub recent: HashMap<String, Vec<String>>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -67,6 +71,7 @@ fn config_path() -> Option<PathBuf> {
     Some(dir.join("config.json"))
 }
 
+pub const RECENT_LIMIT: usize = 20;
 pub const DEFAULT_FONT_SIZE: f32 = 13.0;
 pub const FONT_SIZE_RANGE: (f32, f32) = (10.0, 24.0);
 
@@ -74,6 +79,14 @@ impl Config {
     /// The editor's font size, kept inside a range the layout copes with even if the file was edited by hand.
     pub fn font_size(&self) -> f32 {
         self.editor_font_size.unwrap_or(DEFAULT_FONT_SIZE).clamp(FONT_SIZE_RANGE.0, FONT_SIZE_RANGE.1)
+    }
+
+    /// Moves `file` to the front of the project's recently opened list.
+    pub fn touch_recent(&mut self, repo: &str, file: &str) {
+        let list = self.recent.entry(repo.to_string()).or_default();
+        list.retain(|f| f != file);
+        list.insert(0, file.to_string());
+        list.truncate(RECENT_LIMIT);
     }
 
     pub fn load() -> Self {
