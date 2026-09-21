@@ -120,6 +120,7 @@ pub struct Madi {
     pub sidebar_view: SidebarView,
     pub sidebar_width: f32,
     sidebar_drag_x: Option<f32>,
+    tab_drag: Option<(usize, f32)>,
     pub worktrees: Vec<WorktreeInfo>,
     pub pins: HashMap<String, String>,
     pub branches: Vec<String>,
@@ -168,6 +169,7 @@ impl Madi {
             sidebar_view: SidebarView::Files,
             sidebar_width: 280.,
             sidebar_drag_x: None,
+            tab_drag: None,
             worktrees: Vec::new(),
             pins: HashMap::new(),
             branches: Vec::new(),
@@ -586,6 +588,30 @@ impl Madi {
             Some(a) if a == ix => Some(ix.min(ws.tabs.len() - 1)),
             other => other,
         };
+    }
+
+    fn begin_tab_drag(&mut self, ix: usize, x: f32) {
+        self.tab_drag = Some((ix, x));
+    }
+
+    fn drag_tab(&mut self, x: f32) {
+        let Some((ix, previous)) = self.tab_drag else { return };
+        let Some(count) = self.workspace().map(|ws| ws.tabs.len()) else { return };
+        let delta = x - previous;
+        let target = if delta > 48. && ix + 1 < count { Some(ix + 1) } else if delta < -48. && ix > 0 { Some(ix - 1) } else { None };
+        let Some(target) = target else { return };
+        let ws = self.workspace_mut();
+        ws.tabs.swap(ix, target);
+        if ws.active == Some(ix) {
+            ws.active = Some(target);
+        } else if ws.active == Some(target) {
+            ws.active = Some(ix);
+        }
+        self.tab_drag = Some((target, x));
+    }
+
+    fn end_tab_drag(&mut self) {
+        self.tab_drag = None;
     }
 
     fn resolve_close(&mut self, save: bool, cx: &mut Cx) {
@@ -1076,6 +1102,13 @@ impl Madi {
                 .gap(8.)
                 .bg(if is_active { p.bg } else { Color::TRANSPARENT })
                 .hover_bg(if is_active { p.bg } else { p.selected })
+                .on_mouse_down(move |s: &mut Madi, _, event| {
+                    if event.button == gyeol::MouseButton::Left {
+                        s.begin_tab_drag(i, event.pos.0);
+                    }
+                })
+                .on_drag(|s: &mut Madi, _, event| s.drag_tab(event.pos.0))
+                .on_mouse_up(|s: &mut Madi, _, _| s.end_tab_drag())
                 .on_click(move |s: &mut Madi, _| s.activate_tab(i))
                 .child(if tab.preview { title.text_italic() } else { title })
                 .child(close)
@@ -1539,6 +1572,21 @@ mod tests {
         assert!(!host.state().workspace().unwrap().tabs[0].preview, "editing pins it");
         host.click_text("lib.rs");
         assert_eq!(host.state().workspace().unwrap().tabs.len(), 2, "so the next preview gets its own tab");
+    }
+
+    #[test]
+    fn dragging_tabs_reorders_them_and_preserves_the_active_file() {
+        let (mut host, _, path) = app("tab-drag");
+        host.state_mut().open_file(Path::new(&path).join("README.md"), false);
+        host.state_mut().open_file(Path::new(&path).join("src/main.rs"), false);
+        let app = host.state_mut();
+        assert_eq!(app.workspace().unwrap().tabs.iter().map(|tab| tab.title.as_str()).collect::<Vec<_>>(), ["README.md", "main.rs"]);
+        assert_eq!(app.active_tab().map(|tab| tab.title.as_str()), Some("main.rs"));
+        app.begin_tab_drag(1, 100.);
+        app.drag_tab(0.);
+        app.end_tab_drag();
+        assert_eq!(app.workspace().unwrap().tabs.iter().map(|tab| tab.title.as_str()).collect::<Vec<_>>(), ["main.rs", "README.md"]);
+        assert_eq!(app.active_tab().map(|tab| tab.title.as_str()), Some("main.rs"));
     }
 
     #[test]
