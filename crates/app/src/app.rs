@@ -22,6 +22,7 @@ use madi_project::{
 
 use crate::{
     editor::{self, Editor},
+    find::Find,
     icons,
     settings::SettingsTab,
     theme::Palette,
@@ -47,6 +48,7 @@ pub enum SidebarView {
 pub enum Focus {
     Tree,
     Editor,
+    Find,
 }
 
 #[derive(Clone, Copy)]
@@ -138,6 +140,7 @@ pub struct Madi {
     context_menu: Option<ContextMenu>,
     quick_open: Option<QuickOpen>,
     project_search: Option<ProjectSearch>,
+    pub find: Option<Find>,
     pub worktree_remove_confirm: Option<String>,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
@@ -188,6 +191,7 @@ impl Madi {
             context_menu: None,
             quick_open: None,
             project_search: None,
+            find: None,
             worktree_remove_confirm: None,
             focus_mode: false,
             focus: Focus::Tree,
@@ -1434,7 +1438,7 @@ impl Madi {
                 if focused {
                     cx.request_redraw_after(Duration::from_millis((BLINK.as_millis() - self.blink_epoch.elapsed().as_millis() % BLINK.as_millis()) as u64));
                 }
-                editor::view(ed, cx, p, self.config.font_size(), focused && blink_on)
+                editor::view(ed, cx, p, self.config.font_size(), focused && blink_on, self.find_query())
             }
             None => div()
                 .grow()
@@ -1444,7 +1448,8 @@ impl Madi {
                 .child(text("Nothing open").text_size(15.).text_color(p.text))
                 .child(text("Pick a file in Files to edit it").text_size(12.).text_color(p.text_dim)),
         }};
-        div().grow().child(self.tab_bar(p)).child(content)
+        let find_bar = if self.workspace().is_some_and(|ws| ws.showing_diff) { None } else { self.find_bar(p) };
+        div().grow().child(self.tab_bar(p)).child(find_bar.unwrap_or_else(div)).child(content)
     }
 
     fn status_bar(&self, p: &Palette) -> El {
@@ -1512,6 +1517,7 @@ impl View for Madi {
                     return;
                 }
                 if self.project_search_key(key, text.as_deref(), cx) { return; }
+                if self.find_key(key, text.as_deref(), cx) { return; }
                 if self.picker_key(key, text.as_deref(), cx) {
                     return;
                 }
@@ -1541,9 +1547,15 @@ impl View for Madi {
                     self.open_project_search();
                     return;
                 }
+                if matches!(key, gyeol::Key::Char(c) if c.eq_ignore_ascii_case("f") || c.eq_ignore_ascii_case("h")) && cx.modifiers.command() {
+                    let replace = matches!(key, gyeol::Key::Char(c) if c.eq_ignore_ascii_case("h"));
+                    self.open_find(replace, cx);
+                    return;
+                }
                 self.editor_event(event, cx);
             }
             Event::Ime(ime) if self.quick_open_ime(ime) => {}
+            Event::Ime(ime) if self.find_ime(ime, cx) => {}
             Event::Ime(ime) if self.picker_ime(ime) => {}
             _ if !self.settings_open && self.close_confirm.is_none() => self.editor_event(event, cx),
             _ => {}
@@ -2039,6 +2051,58 @@ mod tests {
         press(&mut host, Key::Named(NamedKey::Enter));
         assert!(host.state().quick_open.is_none());
         assert_eq!(host.state().active_tab().map(|tab| tab.title.as_str()), Some("main.rs"));
+    }
+
+    fn notes(host: &mut TestHost<Madi>, path: &str) {
+        std::fs::write(Path::new(path).join("notes.txt"), "foo Foo\nbar foo\n").unwrap();
+        host.state_mut().open_file(Path::new(path).join("notes.txt"), false);
+    }
+
+    #[test]
+    fn find_steps_through_matches_without_touching_the_text() {
+        let (mut host, _, path) = app("find");
+        notes(&mut host, &path);
+        shortcut(&mut host, "f");
+        assert_eq!(host.state().focus, Focus::Find);
+        typed(&mut host, "foo");
+        assert_eq!(doc_text(&host), "foo Foo\nbar foo\n", "typing goes to the bar, not the document");
+        assert!(has_text(&host, "1 of 3"), "the first match is selected as the query is typed");
+
+        press(&mut host, Key::Named(NamedKey::Enter));
+        assert!(has_text(&host, "2 of 3"));
+        host.set_modifiers(Modifiers { shift: true, ..Modifiers::default() });
+        press(&mut host, Key::Named(NamedKey::Enter));
+        host.set_modifiers(Modifiers::default());
+        assert!(has_text(&host, "1 of 3"), "shift+enter goes back");
+
+        typed(&mut host, "zz");
+        assert!(has_text(&host, "No results"));
+        press(&mut host, Key::Named(NamedKey::Escape));
+        assert!(host.state().find.is_none() && host.state().focus == Focus::Editor);
+        typed(&mut host, "!");
+        assert!(doc_text(&host).starts_with('!'), "the editor has the keyboard again");
+    }
+
+    #[test]
+    fn replace_one_at_a_time_or_all_at_once() {
+        let (mut host, _, path) = app("replace");
+        notes(&mut host, &path);
+        shortcut(&mut host, "h");
+        typed(&mut host, "foo");
+        press(&mut host, Key::Named(NamedKey::Tab));
+        typed(&mut host, "x");
+        press(&mut host, Key::Named(NamedKey::Enter));
+        assert_eq!(doc_text(&host), "x Foo\nbar foo\n", "the selected match was replaced");
+        assert!(has_text(&host, "1 of 2"), "and the next match got selected");
+
+        host.set_modifiers(cmd());
+        press(&mut host, Key::Named(NamedKey::Enter));
+        host.set_modifiers(Modifiers::default());
+        assert_eq!(doc_text(&host), "x x\nbar x\n");
+        shortcut(&mut host, "z");
+        host.state_mut().close_find();
+        shortcut(&mut host, "z");
+        assert_eq!(doc_text(&host), "x Foo\nbar foo\n", "replace all is one undo step");
     }
 
     #[test]

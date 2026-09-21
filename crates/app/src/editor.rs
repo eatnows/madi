@@ -2,10 +2,11 @@
 use std::{cell::Cell, path::PathBuf, time::Instant};
 
 use gyeol::{div, list_rows, text, Cx, Element, Event, Ime, Key, MouseEvent, NamedKey, Rect, Shaper, TextStyle};
-use madi_text::{Document, Pos};
+use madi_text::{find_in_line, Document, Pos};
 
 use crate::{
     app::{Focus, Madi},
+    find::match_color,
     theme::Palette,
 };
 
@@ -61,14 +62,14 @@ impl Editor {
 
 // ---- drawing ---------------------------------------------------------------------------------
 
-pub fn view(ed: &Editor, cx: &mut Cx, p: &Palette, size: f32, caret_visible: bool) -> El {
+pub fn view(ed: &Editor, cx: &mut Cx, p: &Palette, size: f32, caret_visible: bool, find: &str) -> El {
     let row_h = Editor::row_h(size);
     let style = Editor::text_style(size);
     let char_w = cx.shaper.width("M", style);
     let content_w = GUTTER_W + ed.max_cols() as f32 * char_w + RIGHT_MARGIN;
     let viewport_w = cx.viewport(ed.x_id()).map_or(0., |v| v.0);
     let range = cx.visible_rows(ed.lines_id(), ed.doc.line_count(), row_h);
-    let rows: Vec<El> = range.clone().map(|row| line_row(ed, row, size, row_h, char_w, p, caret_visible, cx.shaper)).collect();
+    let rows: Vec<El> = range.clone().map(|row| line_row(ed, row, size, row_h, char_w, p, caret_visible, find, cx.shaper)).collect();
 
     let lines = list_rows(ed.lines_id(), ed.doc.line_count(), row_h, range, rows)
         .w(content_w.max(viewport_w))
@@ -79,12 +80,17 @@ pub fn view(ed: &Editor, cx: &mut Cx, p: &Palette, size: f32, caret_visible: boo
 }
 
 #[allow(clippy::too_many_arguments)]
-fn line_row(ed: &Editor, row: usize, size: f32, row_h: f32, char_w: f32, p: &Palette, caret_visible: bool, shaper: &mut Shaper) -> El {
+fn line_row(ed: &Editor, row: usize, size: f32, row_h: f32, char_w: f32, p: &Palette, caret_visible: bool, find: &str, shaper: &mut Shaper) -> El {
     let doc = &ed.doc;
     let line = doc.line(row);
     let style = Editor::text_style(size);
     let mut area = div().row().items_center().grow().h(row_h);
 
+    for m in find_in_line(line, find) {
+        let x0 = shaper.caret_x(line, style, m.start);
+        let x1 = shaper.caret_x(line, style, m.end);
+        area = area.child(div().absolute().left(x0).top(0.).w((x1 - x0).max(0.)).h(row_h).bg(match_color(p)));
+    }
     // Selected part of this line (a selection that continues past the line's end also covers the newline).
     let (a, b) = doc.selection();
     if a != b && row >= a.row && row <= b.row {

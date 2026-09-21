@@ -3,4 +3,4 @@ mod buffer;
 mod document;
 
 pub use buffer::{Buffer, Pos};
-pub use document::Document;
+pub use document::{find_in_line, Document};

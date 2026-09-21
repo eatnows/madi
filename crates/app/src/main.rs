@@ -1,5 +1,6 @@
 mod app;
 mod editor;
+mod find;
 mod icons;
 mod settings;
 mod theme;

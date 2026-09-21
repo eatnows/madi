@@ -26,6 +26,15 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Occurrences of `query` in `line` as byte ranges, ignoring ASCII case (other characters match exactly).
+pub fn find_in_line(line: &str, query: &str) -> Vec<Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let needle = query.to_ascii_lowercase();
+    line.to_ascii_lowercase().match_indices(&needle).map(|(at, m)| at..at + m.len()).collect()
+}
+
 impl Document {
     pub fn new(text: &str) -> Self {
         let buffer = Buffer::from_text(text);
@@ -93,6 +102,66 @@ impl Document {
     pub fn cursor_display(&self) -> (usize, usize) {
         let line = self.buffer.line(self.cursor.row);
         (self.cursor.row + 1, line[..self.cursor.col.min(line.len())].chars().count() + 1)
+    }
+
+    // ---- find and replace ----------------------------------------------------------------------
+
+    /// Every match of `query`, in document order. Matches never span lines.
+    pub fn find_all(&self, query: &str) -> Vec<(Pos, Pos)> {
+        (0..self.line_count())
+            .flat_map(|row| find_in_line(self.line(row), query).into_iter().map(move |r| (Pos::new(row, r.start), Pos::new(row, r.end))))
+            .collect()
+    }
+
+    /// Selects the next (or previous) match, wrapping around the document. `keep_current` lets a match
+    /// that starts at the selection's start stay selected, so typing more of the query doesn't skip it.
+    pub fn select_match(&mut self, query: &str, forward: bool, keep_current: bool) -> bool {
+        let matches = self.find_all(query);
+        let (a, b) = self.selection();
+        let pick = if forward {
+            let from = if keep_current { a } else { b };
+            matches.iter().find(|m| m.0 >= from).or(matches.first())
+        } else {
+            matches.iter().rev().find(|m| m.1 <= a).or(matches.last())
+        };
+        let Some(&(start, end)) = pick else { return false };
+        self.set_cursor(start, false);
+        self.set_cursor(end, true);
+        true
+    }
+
+    /// Replaces the selection when it is itself a match of `query`.
+    pub fn replace_match(&mut self, query: &str, replacement: &str) -> bool {
+        let selected = self.selected_text();
+        if selected.is_empty() || !selected.eq_ignore_ascii_case(query) {
+            return false;
+        }
+        self.insert(replacement, false);
+        true
+    }
+
+    /// Replaces every match as a single undo step; returns how many there were.
+    pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
+        let matches = self.find_all(query);
+        let Some(&(first, _)) = matches.first() else { return 0 };
+        let mut out = String::new();
+        for row in 0..self.line_count() {
+            let line = self.line(row);
+            let mut done = 0;
+            for r in find_in_line(line, query) {
+                out.push_str(&line[done..r.start]);
+                out.push_str(replacement);
+                done = r.end;
+            }
+            out.push_str(&line[done..]);
+            if row + 1 < self.line_count() {
+                out.push('\n');
+            }
+        }
+        self.select_all();
+        self.insert(&out, false);
+        self.set_cursor(first, false);
+        matches.len()
     }
 
     // ---- saving --------------------------------------------------------------------------------
@@ -604,6 +673,39 @@ mod tests {
         }
         assert_eq!(d.pos_to_utf16(Pos::new(0, 5)), 3, "'😀' is two UTF-16 units, so 'b' starts at 3");
         assert_eq!(d.text_in_utf16(0..3).0, "a😀");
+    }
+
+    #[test]
+    fn find_matches_ignoring_ascii_case_and_steps_through_them_with_wrapping() {
+        let mut d = doc("Foo bar foo\nxFOOx\n한글 foo");
+        assert_eq!(d.find_all("foo").len(), 4);
+        assert!(d.find_all("").is_empty());
+
+        assert!(d.select_match("foo", true, true));
+        assert_eq!((d.selection().0, d.selected_text().as_str()), (Pos::new(0, 0), "Foo"));
+        assert!(d.select_match("foo", true, false));
+        assert_eq!(d.selection().0, Pos::new(0, 8));
+        d.select_match("foo", true, false);
+        d.select_match("foo", true, false);
+        d.select_match("foo", true, false);
+        assert_eq!(d.selection().0, Pos::new(0, 0), "wrapped past the last match");
+        assert!(d.select_match("foo", false, false));
+        assert_eq!(d.selection().0, Pos::new(2, "한글 ".len()), "backwards wraps to the last");
+        assert!(!d.select_match("zzz", true, false));
+    }
+
+    #[test]
+    fn replace_one_and_replace_all_as_a_single_undo_step() {
+        let mut d = doc("foo Foo\nbar foo");
+        d.select_match("foo", true, true);
+        assert!(d.replace_match("foo", "x"));
+        assert_eq!(d.text(), "x Foo\nbar foo");
+        assert!(!d.replace_match("foo", "y"), "a caret that isn't on a match replaces nothing");
+
+        assert_eq!(d.replace_all("foo", "한"), 2);
+        assert_eq!(d.text(), "x 한\nbar 한");
+        assert!(d.undo());
+        assert_eq!(d.text(), "x Foo\nbar foo", "undo restores every replacement at once");
     }
 
     #[test]
