@@ -1789,6 +1789,18 @@ mod tests {
         assert_eq!(doc_text(&host), "a# hi\n", "shift + undo shortcut redoes");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cmd_backspace_deletes_back_to_the_start_of_the_line() {
+        let (mut host, _, _) = app("cmd-backspace");
+        host.click_text("README.md");
+        typed(&mut host, "one two");
+        host.set_modifiers(cmd());
+        press(&mut host, Key::Named(NamedKey::Backspace));
+        host.set_modifiers(Modifiers::default());
+        assert_eq!(doc_text(&host), "# hi\n", "everything typed left of the caret is gone, the rest of the line stays");
+    }
+
     #[test]
     fn korean_composes_through_the_input_method() {
         let (mut host, _, _) = app("ime");

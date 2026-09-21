@@ -217,6 +217,7 @@ impl Madi {
         let page = cx.viewport(ed.lines_id()).map_or(20, |v| (v.1 / row_h).floor().max(1.) as isize);
         let doc = &mut ed.doc;
         match key {
+            Key::Named(NamedKey::Backspace) if cmd && mac => doc.delete_to_line_start(),
             Key::Named(NamedKey::Backspace) => doc.backspace(),
             Key::Named(NamedKey::Delete) => doc.delete(),
             Key::Named(NamedKey::Enter) => doc.newline(),

@@ -373,6 +373,17 @@ impl Document {
         self.edit(from, b, "", false);
     }
 
+    /// Cmd+Backspace: deletes from the caret back to the start of the line (the selection, if any;
+    /// at column 0 it joins with the previous line like a plain backspace).
+    pub fn delete_to_line_start(&mut self) {
+        let (a, b) = self.selection();
+        if a == b && b.col > 0 {
+            self.edit(Pos::new(b.row, 0), b, "", false);
+        } else {
+            self.backspace();
+        }
+    }
+
     pub fn delete(&mut self) {
         let (a, b) = self.selection();
         let to = if a != b { b } else { self.next_boundary(self.cursor) };
@@ -706,6 +717,24 @@ mod tests {
         assert_eq!(d.text(), "x 한\nbar 한");
         assert!(d.undo());
         assert_eq!(d.text(), "x Foo\nbar foo", "undo restores every replacement at once");
+    }
+
+    #[test]
+    fn delete_to_line_start_removes_everything_left_of_the_caret() {
+        let mut d = doc("keep\n  let x = 1;\nend");
+        d.set_cursor(Pos::new(1, 6), false);
+        d.delete_to_line_start();
+        assert_eq!(d.text(), "keep\nx = 1;\nend");
+        assert_eq!(d.cursor(), Pos::new(1, 0));
+        d.delete_to_line_start();
+        assert_eq!(d.text(), "keepx = 1;\nend", "at column 0 it joins the previous line");
+
+        d.set_cursor(Pos::new(0, 1), false);
+        d.set_cursor(Pos::new(0, 3), true);
+        d.delete_to_line_start();
+        assert_eq!(d.text(), "kpx = 1;\nend", "a selection is deleted as it is");
+        assert!(d.undo());
+        assert_eq!(d.text(), "keepx = 1;\nend");
     }
 
     #[test]
