@@ -10,6 +10,7 @@ type El = Element<Madi>;
 pub enum SettingsTab {
     General,
     Editor,
+    Plugins,
 }
 
 impl SettingsTab {
@@ -17,6 +18,7 @@ impl SettingsTab {
         match self {
             Self::General => "General",
             Self::Editor => "Editor",
+            Self::Plugins => "Plugins",
         }
     }
 }
@@ -131,6 +133,21 @@ impl Madi {
             )
     }
 
+    fn plugins_settings(&self, p: &Palette) -> El {
+        div()
+            .child(setting_row(
+                p,
+                "Language plugins",
+                "Install language support for syntax highlighting, completions, and diagnostics.",
+                cell("Browse plugins", p.text_dim).border(1., p.border).rounded(6.),
+            ))
+            .child(
+                div().mt(20.).p(16.).rounded(6.).border(1., p.border_soft).bg(p.panel)
+                    .child(text("No plugins installed").text_size(13.).text_color(p.text_strong))
+                    .child(text("Language support will be available here after the plugin registry is connected.").mt(6.).text_size(12.).text_color(p.text_dim)),
+            )
+    }
+
     fn nav_item(&self, p: &Palette, tab: SettingsTab) -> El {
         let active = self.settings_tab == tab;
         div()
@@ -152,6 +169,7 @@ impl Madi {
         let content = match tab {
             SettingsTab::General => self.general_settings(p),
             SettingsTab::Editor => self.editor_settings(p),
+            SettingsTab::Plugins => self.plugins_settings(p),
         };
         let modal = div()
             .w(760.)
@@ -194,7 +212,8 @@ impl Madi {
                             .gap(4.)
                             .bg(p.panel)
                             .child(self.nav_item(p, SettingsTab::General))
-                            .child(self.nav_item(p, SettingsTab::Editor)),
+                            .child(self.nav_item(p, SettingsTab::Editor))
+                            .child(self.nav_item(p, SettingsTab::Plugins)),
                     )
                     .child(rule(p))
                     .child(

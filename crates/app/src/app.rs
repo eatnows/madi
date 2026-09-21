@@ -1879,6 +1879,17 @@ mod tests {
         assert_eq!(host.state().config.font_size(), 10.);
     }
 
+    #[test]
+    fn settings_exposes_the_plugins_page() {
+        let (mut host, _, _) = app("settings-plugins");
+        host.state_mut().open_settings();
+        host.frame();
+        host.click_text("Plugins");
+        assert_eq!(host.state().settings_tab, SettingsTab::Plugins);
+        assert!(has_text(&host, "Language plugins"));
+        assert!(has_text(&host, "No plugins installed"));
+    }
+
     fn git(dir: &Path, args: &[&str]) {
         let output = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
         assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
