@@ -59,6 +59,7 @@ enum BranchPickerTarget {
 enum ContextMenuTarget {
     Project(String),
     Worktree(String),
+    Tree(PathBuf, bool),
 }
 
 struct ContextMenu {
@@ -357,7 +358,42 @@ impl Madi {
         match menu.target {
             ContextMenuTarget::Project(path) => self.request_close_project(path),
             ContextMenuTarget::Worktree(path) => self.worktree_remove_confirm = Some(path),
+            ContextMenuTarget::Tree(_, _) => {}
         }
+    }
+
+    fn tree_action(&mut self, path: PathBuf, is_dir: bool, action: &'static str) {
+        self.context_menu = None;
+        let parent = if is_dir { path.clone() } else { path.parent().unwrap_or(Path::new(&self.repo)).to_path_buf() };
+        #[cfg(target_os = "macos")]
+        let ask = |prompt: &str| -> Option<String> {
+            let script = format!("text returned of (display dialog \"{}\" default answer \"\")", prompt.replace('"', "\\\""));
+            let output = std::process::Command::new("osascript").args(["-e", &script]).output().ok()?;
+            output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string()).filter(|value| !value.is_empty())
+        };
+        match action {
+            "New file" => {
+                #[cfg(target_os = "macos")]
+                if let Some(name) = ask("New file name") { if let Err(error) = std::fs::write(parent.join(name), "") { self.error = Some(format!("Can't create file: {error}")); } }
+            }
+            "New folder" => {
+                #[cfg(target_os = "macos")]
+                if let Some(name) = ask("New folder name") { if let Err(error) = std::fs::create_dir(parent.join(name)) { self.error = Some(format!("Can't create folder: {error}")); } }
+            }
+            "Rename…" => {
+                #[cfg(target_os = "macos")]
+                if let Some(name) = ask("New name") { if let Err(error) = std::fs::rename(&path, path.parent().unwrap_or(Path::new(&self.repo)).join(name)) { self.error = Some(format!("Can't rename: {error}")); } }
+            }
+            "Delete…" => {
+                #[cfg(target_os = "macos")]
+                if ask("Type DELETE to permanently remove this item").as_deref() == Some("DELETE") {
+                    let result = if is_dir { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+                    if let Err(error) = result { self.error = Some(format!("Can't delete: {error}")); }
+                }
+            }
+            _ => {}
+        }
+        self.refresh_tree();
     }
 
     fn close_project(&mut self, path: String) {
@@ -940,17 +976,12 @@ impl Madi {
 
     fn context_menu_view(&self, p: &Palette) -> Option<El> {
         let menu = self.context_menu.as_ref()?;
-        let (label, danger) = match &menu.target {
-            ContextMenuTarget::Project(_) => ("Close project", false),
-            ContextMenuTarget::Worktree(_) => ("Remove worktree…", true),
-        };
+        let items: Vec<(&'static str, bool)> = match &menu.target { ContextMenuTarget::Project(_) => vec![("Close project", false)], ContextMenuTarget::Worktree(_) => vec![("Remove worktree…", true)], ContextMenuTarget::Tree(_, _) => vec![("New file", false), ("New folder", false), ("Rename…", false), ("Delete…", true)] };
+        let target = menu.target.clone();
         Some(
             div().inset(0.).on_click(|s: &mut Madi, _| s.context_menu = None).child(
                 div().absolute().left(menu.anchor.0).top(menu.anchor.1).w(180.).p(4.).rounded(6.).border(1., p.border).bg(p.chrome).on_click(|_: &mut Madi, _| {})
-                    .child(
-                        div().px(8.).py(6.).rounded(4.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.activate_context_menu())
-                            .child(text(label).text_size(12.).text_color(if danger { p.red } else { p.text_strong })),
-                    ),
+                    .children(items.into_iter().map(move |(label, danger)| { let target = target.clone(); div().px(8.).py(6.).rounded(4.).hover_bg(p.selected).on_click(move |s: &mut Madi, _| match target.clone() { ContextMenuTarget::Tree(path, is_dir) => s.tree_action(path, is_dir, label), _ => s.activate_context_menu() }).child(text(label).text_size(12.).text_color(if danger { p.red } else { p.text_strong })) })),
             ),
         )
     }
@@ -1030,6 +1061,7 @@ impl Madi {
             .cursor(gyeol::Cursor::Pointer)
             // A press does the work, so a double click can pin the file's preview tab.
             .on_mouse_down(move |s: &mut Madi, _, e| {
+                if e.button == gyeol::MouseButton::Right { s.open_context_menu(ContextMenuTarget::Tree(path.clone(), is_dir), e.pos); return; }
                 s.focus = Focus::Tree;
                 s.select(path.clone());
                 if is_dir {
