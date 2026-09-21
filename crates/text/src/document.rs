@@ -271,6 +271,33 @@ impl Document {
         self.edit(a, b, text, typing);
     }
 
+    /// Inserts matching delimiters, leaving the caret inside an empty pair or wrapping a selection.
+    pub fn insert_pair(&mut self, open: char, close: char) {
+        let (a, b) = self.selection();
+        let selected = self.buffer.text_in(a, b);
+        self.edit(a, b, &format!("{open}{selected}{close}"), true);
+        if a == b {
+            self.move_left(false);
+        }
+    }
+
+    /// Types a closer, advancing over an already-present matching closer when possible.
+    pub fn insert_closer(&mut self, close: char) {
+        if self.selection().0 == self.selection().1 && self.char_at(self.cursor) == Some(close) {
+            self.move_right(false);
+        } else {
+            self.insert(&close.to_string(), true);
+        }
+    }
+
+    pub fn insert_quote(&mut self, quote: char) {
+        if self.selection().0 == self.selection().1 && self.char_at(self.cursor) == Some(quote) {
+            self.move_right(false);
+        } else {
+            self.insert_pair(quote, quote);
+        }
+    }
+
     pub fn backspace(&mut self) {
         let (a, b) = self.selection();
         let from = if a != b { a } else { self.prev_boundary(self.cursor) };
@@ -456,6 +483,18 @@ mod tests {
         type_str(&mut d, "한글");
         d.backspace();
         assert_eq!(d.text(), "한", "one press removes one syllable, not one byte");
+    }
+
+    #[test]
+    fn pairs_delimiters_and_skips_an_existing_closer() {
+        let mut d = doc("");
+        d.insert_pair('(', ')');
+        assert_eq!(d.text(), "()" );
+        assert_eq!(d.cursor(), Pos::new(0, 1));
+        d.insert("x", true);
+        d.insert_closer(')');
+        assert_eq!(d.text(), "(x)");
+        assert_eq!(d.cursor(), Pos::new(0, 3));
     }
 
     #[test]
