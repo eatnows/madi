@@ -66,6 +66,11 @@ struct ContextMenu {
     anchor: (f32, f32),
 }
 
+struct QuickOpen {
+    query: String,
+    highlighted: usize,
+}
+
 struct BranchPicker {
     target: BranchPickerTarget,
     anchor: (f32, f32),
@@ -124,6 +129,7 @@ pub struct Madi {
     pub worktree_issue: Option<Issue>,
     branch_picker: Option<BranchPicker>,
     context_menu: Option<ContextMenu>,
+    quick_open: Option<QuickOpen>,
     pub worktree_remove_confirm: Option<String>,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
@@ -171,6 +177,7 @@ impl Madi {
             worktree_issue: None,
             branch_picker: None,
             context_menu: None,
+            quick_open: None,
             worktree_remove_confirm: None,
             focus_mode: false,
             focus: Focus::Tree,
@@ -393,6 +400,100 @@ impl Madi {
 
     fn end_sidebar_resize(&mut self) {
         self.sidebar_drag_x = None;
+    }
+
+    fn open_quick_open(&mut self) {
+        if self.repo.is_empty() {
+            self.error = Some("Open a project before using Quick Open".into());
+            return;
+        }
+        self.quick_open = Some(QuickOpen { query: String::new(), highlighted: 0 });
+    }
+
+    fn project_files(&self) -> Vec<PathBuf> {
+        fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                if name == ".git" || name == ".DS_Store" {
+                    continue;
+                }
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    collect(&path, out);
+                } else if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        collect(Path::new(&self.repo), &mut files);
+        files.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+        files
+    }
+
+    fn quick_open_results(&self) -> Vec<PathBuf> {
+        let query = self.quick_open.as_ref().map_or("", |picker| picker.query.as_str()).to_lowercase();
+        self.project_files().into_iter().filter(|path| {
+            let label = path.strip_prefix(&self.repo).unwrap_or(path).to_string_lossy().to_lowercase();
+            query.chars().fold(Some(0usize), |offset, needle| {
+                offset.and_then(|start| label[start..].find(needle).map(|index| start + index + needle.len_utf8()))
+            }).is_some()
+        }).collect()
+    }
+
+    fn activate_quick_open(&mut self, row: usize) {
+        let Some(path) = self.quick_open_results().into_iter().nth(row) else { return };
+        self.quick_open = None;
+        self.open_file(path, false);
+    }
+
+    fn quick_open_key(&mut self, key: &gyeol::Key, text: Option<&str>, cx: &Cx) -> bool {
+        if self.quick_open.is_none() {
+            return false;
+        }
+        match key {
+            gyeol::Key::Named(NamedKey::Escape) => self.quick_open = None,
+            gyeol::Key::Named(NamedKey::Enter) => {
+                let highlighted = self.quick_open.as_ref().map_or(0, |picker| picker.highlighted);
+                self.activate_quick_open(highlighted);
+            }
+            gyeol::Key::Named(NamedKey::ArrowUp) => {
+                if let Some(picker) = &mut self.quick_open {
+                    picker.highlighted = picker.highlighted.saturating_sub(1);
+                }
+            }
+            gyeol::Key::Named(NamedKey::ArrowDown) => {
+                let last = self.quick_open_results().len().saturating_sub(1);
+                if let Some(picker) = &mut self.quick_open {
+                    picker.highlighted = (picker.highlighted + 1).min(last);
+                }
+            }
+            gyeol::Key::Named(NamedKey::Backspace) => {
+                if let Some(picker) = &mut self.quick_open {
+                    picker.query.pop();
+                    picker.highlighted = 0;
+                }
+            }
+            _ if !cx.modifiers.command() => {
+                if let (Some(input), Some(picker)) = (text, &mut self.quick_open) {
+                    picker.query.push_str(input);
+                    picker.highlighted = 0;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn quick_open_ime(&mut self, ime: &gyeol::Ime) -> bool {
+        let Some(picker) = &mut self.quick_open else { return false };
+        if let gyeol::Ime::Commit(input) = ime {
+            picker.query.push_str(input);
+            picker.highlighted = 0;
+        }
+        true
     }
 
     // ---- tabs --------------------------------------------------------------------------------
@@ -775,6 +876,25 @@ impl Madi {
                         div().px(8.).py(6.).rounded(4.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.activate_context_menu())
                             .child(text(label).text_size(12.).text_color(if danger { p.red } else { p.text_strong })),
                     ),
+            ),
+        )
+    }
+
+    fn quick_open_view(&self, p: &Palette) -> Option<El> {
+        let picker = self.quick_open.as_ref()?;
+        let query = picker.query.clone();
+        let rows = self.quick_open_results().into_iter().take(12).enumerate().map(|(ix, path)| {
+            let label = path.strip_prefix(&self.repo).unwrap_or(&path).display().to_string();
+            div().px(10.).py(6.).rounded(4.).bg(if picker.highlighted == ix { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
+                .on_click(move |s: &mut Madi, _| s.activate_quick_open(ix))
+                .child(text(label).text_size(12.).text_family(editor::MONO).text_color(p.text_strong))
+        });
+        let search = if query.is_empty() { "Search files".into() } else { format!("{query}│") };
+        Some(
+            div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.25)).on_click(|s: &mut Madi, _| s.quick_open = None).child(
+                div().w(560.).max_h(420.).rounded(8.).border(1., p.border).bg(p.chrome).on_click(|_: &mut Madi, _| {})
+                    .child(div().px(12.).py(10.).border(1., p.border_soft).child(text(search).text_size(13.).text_family(editor::MONO).text_color(if query.is_empty() { p.text_dim } else { p.text_strong })))
+                    .child(div().max_h(360.).overflow_y_scroll().p(4.).gap(2.).children(rows)),
             ),
         )
     }
@@ -1200,6 +1320,9 @@ impl View for Madi {
         if let Some(menu) = self.context_menu_view(&p) {
             root = root.child(menu);
         }
+        if let Some(quick_open) = self.quick_open_view(&p) {
+            root = root.child(quick_open);
+        }
         root
     }
 
@@ -1208,6 +1331,9 @@ impl View for Madi {
             Event::FocusChanged(focused) => self.window_focused = *focused,
             Event::Scroll { .. } if self.git_graph_open => self.load_graph_if_near_end(cx),
             Event::KeyDown { key, text, .. } => {
+                if self.quick_open_key(key, text.as_deref(), cx) {
+                    return;
+                }
                 if self.picker_key(key, text.as_deref(), cx) {
                     return;
                 }
@@ -1229,8 +1355,13 @@ impl View for Madi {
                     self.open_settings();
                     return;
                 }
+                if matches!(key, gyeol::Key::Char(c) if c.eq_ignore_ascii_case("p")) && cx.modifiers.command() {
+                    self.open_quick_open();
+                    return;
+                }
                 self.editor_event(event, cx);
             }
+            Event::Ime(ime) if self.quick_open_ime(ime) => {}
             Event::Ime(ime) if self.picker_ime(ime) => {}
             _ if !self.settings_open && self.close_confirm.is_none() => self.editor_event(event, cx),
             _ => {}
@@ -1664,6 +1795,18 @@ mod tests {
         host.key(gyeol::Key::Char("e".into()), Some("e"));
         host.key(gyeol::Key::Char("t".into()), Some("t"));
         assert!(has_text(&host, "beta") && !has_text(&host, "alpha"), "typing filters the grouped list");
+    }
+
+    #[test]
+    fn quick_open_filters_paths_and_opens_the_highlighted_file() {
+        let (mut host, _, _) = app("quick-open");
+        shortcut(&mut host, "p");
+        assert!(has_text(&host, "Search files"));
+        typed(&mut host, "main");
+        assert!(has_text(&host, "src/main.rs"));
+        press(&mut host, Key::Named(NamedKey::Enter));
+        assert!(host.state().quick_open.is_none());
+        assert_eq!(host.state().active_tab().map(|tab| tab.title.as_str()), Some("main.rs"));
     }
 
     #[test]
