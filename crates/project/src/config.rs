@@ -26,6 +26,14 @@ impl Appearance {
     }
 }
 
+/// The open tabs of one project, in tab order, so they come back on the next launch.
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct Session {
+    pub tabs: Vec<String>,
+    pub active: Option<String>,
+}
+
 /// `default` on the whole struct: a config missing a field (older file, hand-edited, or written by a
 /// build before the field existed) must keep what it does have instead of failing to parse and
 /// silently resetting everything, including the registered projects.
@@ -39,6 +47,8 @@ pub struct Config {
     pub last_project: Option<String>,
     /// repo path -> (worktree path -> base branch)
     pub pins: HashMap<String, HashMap<String, String>>,
+    /// repo path -> its open tabs
+    pub sessions: HashMap<String, Session>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }

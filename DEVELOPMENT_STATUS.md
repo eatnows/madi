@@ -42,6 +42,7 @@ The model crates remain UI-independent:
 - Automatic indentation on a new line
 - Matching completion for `()`, `[]`, `{}`, single quotes, and double quotes; typing an existing closing delimiter moves over it
 - Font-size setting, light/dark/system theme, focus mode
+- Session restoration: each project's open tabs and active tab return on the next launch (vanished files are skipped)
 
 ### Git and worktrees
 
@@ -75,7 +76,7 @@ Plugin installation should support platform-specific analyzer downloads, version
 - Tree-sitter syntax highlighting
 - LSP/analyzer lifecycle and editor features: completions, diagnostics, go-to-definition, rename
 - Split editor panes (horizontal and vertical)
-- Recently opened files and session restoration
+- Recently opened files list; restoring sidebar folder expansion and window layout across launches
 - Symbol navigation and code folding
 - Git stage/unstage, commit creation, branch create/switch workflows
 

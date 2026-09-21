@@ -15,7 +15,7 @@ use madi_git::{
     worktree::WorktreeInfo,
 };
 use madi_project::{
-    config::{Appearance, Config},
+    config::{Appearance, Config, Session},
     scan::{scan_repo, Issue, ScanOutcome},
     tree::{build_tree_rows, TreeRow},
 };
@@ -241,6 +241,9 @@ impl Madi {
         self.config.save();
         self.repo = path;
         self.error = None;
+        if !self.workspaces.contains_key(&self.repo) {
+            self.restore_session();
+        }
         self.refresh_tree();
         self.refresh_worktrees();
         self.git_graph_open = false;
@@ -400,6 +403,7 @@ impl Madi {
         let index = self.config.projects.iter().position(|p| p == &path);
         self.workspaces.remove(&path);
         self.config.projects.retain(|p| p != &path);
+        self.config.sessions.remove(&path);
         if self.config.last_project.as_deref() == Some(&path) { self.config.last_project = None; }
         self.config.save();
         if self.repo == path {
@@ -600,9 +604,43 @@ impl Madi {
         if ws.showing_diff { None } else { ws.tabs.get_mut(ix).map(|tab| &mut tab.editor) }
     }
 
+    /// Remembers this project's open tabs; the loose-files workspace (no project) is never saved.
+    fn save_session(&mut self) {
+        let Some(ws) = self.workspaces.get(&self.repo).filter(|_| !self.repo.is_empty()) else { return };
+        let session = Session {
+            tabs: ws.tabs.iter().map(|t| t.path.to_string_lossy().into_owned()).collect(),
+            active: ws.active.and_then(|i| ws.tabs.get(i)).map(|t| t.path.to_string_lossy().into_owned()),
+        };
+        if self.config.sessions.get(&self.repo) != Some(&session) {
+            self.config.sessions.insert(self.repo.clone(), session);
+            self.config.save();
+        }
+    }
+
+    /// Reopens the tabs a project had last time; files that vanished or can't be read are skipped.
+    fn restore_session(&mut self) {
+        let Some(session) = self.config.sessions.get(&self.repo).cloned() else { return };
+        for tab in &session.tabs {
+            let path = PathBuf::from(tab);
+            if path.is_file() {
+                self.open_tab(path, false);
+            }
+        }
+        let ws = self.workspace_mut();
+        ws.active = session.active.and_then(|a| ws.tabs.iter().position(|t| t.path == Path::new(&a)));
+        ws.active = ws.active.or(if ws.tabs.is_empty() { None } else { Some(0) });
+        self.error = None;
+        self.focus = Focus::Tree;
+    }
+
+    pub fn open_file(&mut self, path: PathBuf, preview: bool) {
+        self.open_tab(path, preview);
+        self.save_session();
+    }
+
     /// Opens a file as a tab (or focuses its tab). A preview open replaces the current preview tab; a
     /// regular open pins whatever it lands on.
-    pub fn open_file(&mut self, path: PathBuf, preview: bool) {
+    fn open_tab(&mut self, path: PathBuf, preview: bool) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.focus = Focus::Editor;
         self.blink_epoch = Instant::now();
@@ -651,6 +689,7 @@ impl Madi {
             ws.showing_diff = false;
             self.focus = Focus::Editor;
             self.blink_epoch = Instant::now();
+            self.save_session();
         }
     }
 
@@ -673,6 +712,7 @@ impl Madi {
             Some(a) if a == ix => Some(ix.min(ws.tabs.len() - 1)),
             other => other,
         };
+        self.save_session();
     }
 
     fn begin_tab_drag(&mut self, ix: usize, x: f32) {
@@ -697,6 +737,7 @@ impl Madi {
 
     fn end_tab_drag(&mut self) {
         self.tab_drag = None;
+        self.save_session();
     }
 
     fn resolve_close(&mut self, save: bool, cx: &mut Cx) {
@@ -1670,6 +1711,30 @@ mod tests {
         assert!(!host.state().workspace().unwrap().tabs[0].preview, "editing pins it");
         host.click_text("lib.rs");
         assert_eq!(host.state().workspace().unwrap().tabs.len(), 2, "so the next preview gets its own tab");
+    }
+
+    #[test]
+    fn open_tabs_and_the_active_one_come_back_on_the_next_launch() {
+        let (mut host, root, path) = app("session");
+        let proj = Path::new(&path);
+        for file in ["README.md", "src/main.rs", "src/lib.rs"] {
+            host.state_mut().open_file(proj.join(file), false);
+        }
+        host.state_mut().activate_tab(1);
+        std::fs::remove_file(proj.join("src/lib.rs")).unwrap();
+
+        let relaunched = Madi::new(Some(path.clone()), Config::at(Some(root.join("config.json"))));
+        let ws = relaunched.workspace().unwrap();
+        let names: Vec<&str> = ws.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(names, ["README.md", "main.rs"], "the deleted file is skipped");
+        assert_eq!(ws.active, Some(1));
+        assert!(relaunched.error.is_none());
+
+        let mut relaunched = relaunched;
+        relaunched.close_tab(0);
+        relaunched.close_tab(0);
+        let again = Madi::new(Some(path), Config::at(Some(root.join("config.json"))));
+        assert!(again.workspace().unwrap().tabs.is_empty(), "closing tabs is remembered too");
     }
 
     #[test]
