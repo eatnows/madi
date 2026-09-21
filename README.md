@@ -1,6 +1,6 @@
 # Madi
 
-A native (Rust + [GPUI](https://www.gpui.rs)) code editor built around git worktrees: edit files,
+A native Rust code editor built on the [gyeol](https://github.com/eatnows/gyeol) UI toolkit and centered on git worktrees: edit files,
 and review what each worktree changed against its base branch without leaving the editor.
 
 - **Files** – the project's tree; files open as tabs in the editor (Korean/IME input works).
@@ -12,21 +12,18 @@ and review what each worktree changed against its base branch without leaving th
 
 ## Layout
 
-A Cargo workspace, split by responsibility (the crate boundaries mirror what Zed does: models with
-no UI dependency, reusable UI pieces, views, and the app that assembles them):
+A Cargo workspace split by responsibility. The model crates have no UI dependency; the app draws
+them with gyeol:
 
-| crate | what it holds | gpui? |
+| crate | what it holds | UI runtime |
 | --- | --- | --- |
 | `crates/text` | text buffer with undo, and `Document`: caret, selection, editing commands, IME offsets | no |
 | `crates/git` | worktrees, diffs, history, graph lanes, diff layout, branch lists | no |
 | `crates/project` | settings, repo scan, lazily expanded file tree | no |
-| `crates/ui` | theme, scroll helpers, IME text input, diff drawing, small widgets | yes |
-| `crates/editor` | the editor view, a thin layer over `text::Document` | yes |
-| `crates/app` | the `madi` binary: workspace/tabs, sidebar, git panel, overlays, chrome | yes |
-| `crates/app-gyeol` | the same app being ported piece by piece to the [gyeol](https://github.com/eatnows/gyeol) UI toolkit (`madi-gyeol` binary; needs `../gyeol` checked out next to this repo) | yes |
+| `crates/app` | the `madi` binary: editor, workspace/tabs, sidebar, git panel, overlays, chrome | [gyeol](https://github.com/eatnows/gyeol) |
 
-Logic lives in the crates without gpui, so it is tested without a window; the app's tests drive
-real keystrokes, wheel events and repos through GPUI's test harness.
+Logic lives in the crates without UI dependencies. The app's TestHost tests drive keystrokes,
+IME, mouse events, scrolling, and repositories without opening a window.
 
 ## Run
 
@@ -34,5 +31,3 @@ real keystrokes, wheel events and repos through GPUI's test harness.
 cargo run -p madi -- /path/to/a/repo   # a folder (remembered as a project) or a single file; optional
 cargo test --workspace
 ```
-
-On macOS, GPUI needs Xcode's Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`.

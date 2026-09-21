@@ -2,14 +2,14 @@
 name = "madi"
 version = "0.1.0"
 edition = "2021"
+description = "Madi, a native Rust code editor built on the gyeol UI toolkit"
+
+[[bin]]
+name = "madi"
+path = "src/main.rs"
 
 [dependencies]
-gpui = "0.2.2"
-madi-git = { path = "../git" }
+gyeol = { path = "../../../gyeol" }
 madi-project = { path = "../project" }
-madi-editor = { path = "../editor" }
-madi-ui = { path = "../ui" }
-chrono = "0.4"
-
-[dev-dependencies]
-gpui = { version = "0.2.2", features = ["test-support"] }
+madi-text = { path = "../text" }
+madi-git = { path = "../git" }

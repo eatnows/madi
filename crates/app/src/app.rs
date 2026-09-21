@@ -1224,7 +1224,7 @@ mod tests {
 
     /// A project with `src/main.rs`, `src/lib.rs` and `README.md` in a fresh temp folder.
     fn project(name: &str) -> (PathBuf, String) {
-        let root = std::env::temp_dir().join(format!("madi-gyeol-test-{name}"));
+        let root = std::env::temp_dir().join(format!("madi-test-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         let proj = root.join("proj");
         std::fs::create_dir_all(proj.join("src")).unwrap();
@@ -1574,7 +1574,7 @@ mod tests {
 
     #[test]
     fn worktrees_open_a_virtualized_diff_tab() {
-        let root = std::env::temp_dir().join("madi-gyeol-test-worktree-diff");
+        let root = std::env::temp_dir().join("madi-test-worktree-diff");
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -1665,7 +1665,7 @@ mod tests {
 
     #[test]
     fn graph_history_loads_in_pages_until_the_end() {
-        let root = std::env::temp_dir().join("madi-gyeol-test-graph-pages");
+        let root = std::env::temp_dir().join("madi-test-graph-pages");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "-q", "-b", "main"]);
@@ -1699,7 +1699,7 @@ mod tests {
 
     #[test]
     fn a_single_file_opens_without_becoming_a_project() {
-        let root = std::env::temp_dir().join("madi-gyeol-test-loose-file");
+        let root = std::env::temp_dir().join("madi-test-loose-file");
         std::fs::create_dir_all(&root).unwrap();
         let file = root.join("note.txt");
         std::fs::write(&file, "loose\n").unwrap();
