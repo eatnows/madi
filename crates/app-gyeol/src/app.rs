@@ -55,6 +55,17 @@ enum BranchPickerTarget {
     Graph,
 }
 
+#[derive(Clone)]
+enum ContextMenuTarget {
+    Project(String),
+    Worktree(String),
+}
+
+struct ContextMenu {
+    target: ContextMenuTarget,
+    anchor: (f32, f32),
+}
+
 struct BranchPicker {
     target: BranchPickerTarget,
     anchor: (f32, f32),
@@ -111,6 +122,7 @@ pub struct Madi {
     pub selected_change: Option<usize>,
     pub worktree_issue: Option<Issue>,
     branch_picker: Option<BranchPicker>,
+    context_menu: Option<ContextMenu>,
     pub worktree_remove_confirm: Option<String>,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
@@ -156,6 +168,7 @@ impl Madi {
             selected_change: None,
             worktree_issue: None,
             branch_picker: None,
+            context_menu: None,
             worktree_remove_confirm: None,
             focus_mode: false,
             focus: Focus::Tree,
@@ -315,6 +328,18 @@ impl Madi {
     fn request_close_project(&mut self, path: String) {
         let dirty = self.workspaces.get(&path).is_some_and(|ws| ws.tabs.iter().any(|tab| tab.editor.doc.is_dirty()));
         if dirty { self.project_close_confirm = Some(path); } else { self.close_project(path); }
+    }
+
+    fn open_context_menu(&mut self, target: ContextMenuTarget, anchor: (f32, f32)) {
+        self.context_menu = Some(ContextMenu { target, anchor });
+    }
+
+    fn activate_context_menu(&mut self) {
+        let Some(menu) = self.context_menu.take() else { return };
+        match menu.target {
+            ContextMenuTarget::Project(path) => self.request_close_project(path),
+            ContextMenuTarget::Worktree(path) => self.worktree_remove_confirm = Some(path),
+        }
     }
 
     fn close_project(&mut self, path: String) {
@@ -660,7 +685,9 @@ impl Madi {
                 .justify_center()
                 .rounded(6.)
                 .on_mouse_down(move |s: &mut Madi, _, event| {
-                    if event.button == gyeol::MouseButton::Right { s.request_close_project(close.clone()); }
+                    if event.button == gyeol::MouseButton::Right {
+                        s.open_context_menu(ContextMenuTarget::Project(close.clone()), event.pos);
+                    }
                 })
                 .on_click(move |s: &mut Madi, _| s.open_project(target.clone()))
                 .child(text(letter).text_color(if active { p.bg } else { p.text_dim }));
@@ -717,6 +744,23 @@ impl Madi {
                 .child(text("Remove this worktree from disk?").text_size(12.).text_color(p.text_dim))
                 .child(div().row().justify_end().gap(8.).child(div().px(10.).py(6.).rounded(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.worktree_remove_confirm = None).child(text("Cancel").text_size(12.).text_color(p.text_dim))).child(div().px(10.).py(6.).rounded(6.).bg(p.red.with_alpha(0.35)).on_click(move |s: &mut Madi, _| { s.worktree_remove_confirm = None; s.remove_worktree(path.clone()); }).child(text("Remove").text_size(12.).text_color(p.text_strong)))),
         ))
+    }
+
+    fn context_menu_view(&self, p: &Palette) -> Option<El> {
+        let menu = self.context_menu.as_ref()?;
+        let (label, danger) = match &menu.target {
+            ContextMenuTarget::Project(_) => ("Close project", false),
+            ContextMenuTarget::Worktree(_) => ("Remove worktree…", true),
+        };
+        Some(
+            div().inset(0.).on_click(|s: &mut Madi, _| s.context_menu = None).child(
+                div().absolute().left(menu.anchor.0).top(menu.anchor.1).w(180.).p(4.).rounded(6.).border(1., p.border).bg(p.chrome).on_click(|_: &mut Madi, _| {})
+                    .child(
+                        div().px(8.).py(6.).rounded(4.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.activate_context_menu())
+                            .child(text(label).text_size(12.).text_color(if danger { p.red } else { p.text_strong })),
+                    ),
+            ),
+        )
     }
 
 
@@ -794,7 +838,11 @@ impl Madi {
             let removable = !wt.is_main;
             div().px(8.).py(6.).rounded(6.)
                 .bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
-                .on_mouse_down(move |s: &mut Madi, _, event| { if removable && event.button == gyeol::MouseButton::Right { s.worktree_remove_confirm = Some(remove.clone()); } })
+                .on_mouse_down(move |s: &mut Madi, _, event| {
+                    if removable && event.button == gyeol::MouseButton::Right {
+                        s.open_context_menu(ContextMenuTarget::Worktree(remove.clone()), event.pos);
+                    }
+                })
                 .on_click(move |s: &mut Madi, _| s.select_worktree(i))
                 .child(text(wt.name.clone()).text_size(12.).text_color(p.text_strong))
                 .child(text(format!("{branch}  {status}")).text_size(11.).text_color(p.text_dim))
@@ -1126,6 +1174,9 @@ impl View for Madi {
         }
         if let Some(picker) = self.branch_picker_view(&p) {
             root = root.child(picker);
+        }
+        if let Some(menu) = self.context_menu_view(&p) {
+            root = root.child(menu);
         }
         root
     }
@@ -1578,6 +1629,19 @@ mod tests {
         host.key(gyeol::Key::Char("e".into()), Some("e"));
         host.key(gyeol::Key::Char("t".into()), Some("t"));
         assert!(has_text(&host, "beta") && !has_text(&host, "alpha"), "typing filters the grouped list");
+    }
+
+    #[test]
+    fn context_menu_defers_destructive_actions_until_its_item_is_chosen() {
+        let (mut host, _, _) = app("context-menu");
+        host.state_mut().open_context_menu(ContextMenuTarget::Worktree("/tmp/feature".into()), (90., 80.));
+        host.frame();
+        assert!(has_text(&host, "Remove worktree…"));
+        assert!(host.state().worktree_remove_confirm.is_none(), "opening a menu is not the destructive confirmation step");
+
+        host.click_text("Remove worktree…");
+        assert_eq!(host.state().worktree_remove_confirm.as_deref(), Some("/tmp/feature"));
+        assert!(host.state().context_menu.is_none());
     }
 
     #[test]
