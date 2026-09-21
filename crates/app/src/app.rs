@@ -71,6 +71,11 @@ struct QuickOpen {
     highlighted: usize,
 }
 
+struct ProjectSearch {
+    query: String,
+    highlighted: usize,
+}
+
 struct BranchPicker {
     target: BranchPickerTarget,
     anchor: (f32, f32),
@@ -131,6 +136,7 @@ pub struct Madi {
     branch_picker: Option<BranchPicker>,
     context_menu: Option<ContextMenu>,
     quick_open: Option<QuickOpen>,
+    project_search: Option<ProjectSearch>,
     pub worktree_remove_confirm: Option<String>,
     /// Hides everything but the top bar and the editor area.
     pub focus_mode: bool,
@@ -180,6 +186,7 @@ impl Madi {
             branch_picker: None,
             context_menu: None,
             quick_open: None,
+            project_search: None,
             worktree_remove_confirm: None,
             focus_mode: false,
             focus: Focus::Tree,
@@ -494,6 +501,48 @@ impl Madi {
         if let gyeol::Ime::Commit(input) = ime {
             picker.query.push_str(input);
             picker.highlighted = 0;
+        }
+        true
+    }
+
+    fn open_project_search(&mut self) {
+        if self.repo.is_empty() { self.error = Some("Open a project before searching".into()); return; }
+        self.project_search = Some(ProjectSearch { query: String::new(), highlighted: 0 });
+    }
+
+    fn project_search_results(&self) -> Vec<(PathBuf, usize, String)> {
+        let query = self.project_search.as_ref().map_or("", |search| search.query.as_str()).to_lowercase();
+        if query.is_empty() { return Vec::new(); }
+        let mut results = Vec::new();
+        for path in self.project_files() {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for (row, line) in text.lines().enumerate() {
+                if line.to_lowercase().contains(&query) {
+                    results.push((path.clone(), row, line.trim().to_string()));
+                    if results.len() == 100 { return results; }
+                }
+            }
+        }
+        results
+    }
+
+    fn activate_project_search(&mut self, row: usize) {
+        let Some((path, line, _)) = self.project_search_results().into_iter().nth(row) else { return };
+        self.project_search = None;
+        self.open_file(path, false);
+        if let Some(editor) = self.active_editor_mut() { editor.doc.set_cursor(madi_text::Pos::new(line, 0), false); }
+    }
+
+    fn project_search_key(&mut self, key: &gyeol::Key, text: Option<&str>, cx: &Cx) -> bool {
+        if self.project_search.is_none() { return false; }
+        match key {
+            gyeol::Key::Named(NamedKey::Escape) => self.project_search = None,
+            gyeol::Key::Named(NamedKey::Enter) => self.activate_project_search(self.project_search.as_ref().map_or(0, |search| search.highlighted)),
+            gyeol::Key::Named(NamedKey::ArrowUp) => if let Some(search) = &mut self.project_search { search.highlighted = search.highlighted.saturating_sub(1); },
+            gyeol::Key::Named(NamedKey::ArrowDown) => { let last = self.project_search_results().len().saturating_sub(1); if let Some(search) = &mut self.project_search { search.highlighted = (search.highlighted + 1).min(last); } }
+            gyeol::Key::Named(NamedKey::Backspace) => if let Some(search) = &mut self.project_search { search.query.pop(); search.highlighted = 0; },
+            _ if !cx.modifiers.command() => if let (Some(input), Some(search)) = (text, &mut self.project_search) { search.query.push_str(input); search.highlighted = 0; },
+            _ => {}
         }
         true
     }
@@ -923,6 +972,17 @@ impl Madi {
                     .child(div().max_h(360.).overflow_y_scroll().p(4.).gap(2.).children(rows)),
             ),
         )
+    }
+
+    fn project_search_view(&self, p: &Palette) -> Option<El> {
+        let search = self.project_search.as_ref()?;
+        let query = search.query.clone();
+        let rows = self.project_search_results().into_iter().take(12).enumerate().map(|(ix, (path, line, excerpt))| {
+            let label = format!("{}:{}  {}", path.strip_prefix(&self.repo).unwrap_or(&path).display(), line + 1, excerpt);
+            div().px(10.).py(6.).rounded(4.).bg(if search.highlighted == ix { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(move |s: &mut Madi, _| s.activate_project_search(ix)).child(text(label).text_size(11.).text_family(editor::MONO).text_color(p.text_strong))
+        });
+        let input = if query.is_empty() { "Search in project".into() } else { format!("{query}│") };
+        Some(div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.25)).on_click(|s: &mut Madi, _| s.project_search = None).child(div().w(700.).max_h(420.).rounded(8.).border(1., p.border).bg(p.chrome).on_click(|_: &mut Madi, _| {}).child(div().px(12.).py(10.).border(1., p.border_soft).child(text(input).text_size(13.).text_family(editor::MONO).text_color(if query.is_empty() { p.text_dim } else { p.text_strong }))).child(div().max_h(360.).overflow_y_scroll().p(4.).gap(2.).children(rows))))
     }
 
 
@@ -1356,6 +1416,7 @@ impl View for Madi {
         if let Some(quick_open) = self.quick_open_view(&p) {
             root = root.child(quick_open);
         }
+        if let Some(search) = self.project_search_view(&p) { root = root.child(search); }
         root
     }
 
@@ -1367,6 +1428,7 @@ impl View for Madi {
                 if self.quick_open_key(key, text.as_deref(), cx) {
                     return;
                 }
+                if self.project_search_key(key, text.as_deref(), cx) { return; }
                 if self.picker_key(key, text.as_deref(), cx) {
                     return;
                 }
@@ -1390,6 +1452,10 @@ impl View for Madi {
                 }
                 if matches!(key, gyeol::Key::Char(c) if c.eq_ignore_ascii_case("p")) && cx.modifiers.command() {
                     self.open_quick_open();
+                    return;
+                }
+                if matches!(key, gyeol::Key::Char(c) if c.eq_ignore_ascii_case("f")) && cx.modifiers.command() && cx.modifiers.shift {
+                    self.open_project_search();
                     return;
                 }
                 self.editor_event(event, cx);
@@ -1855,6 +1921,17 @@ mod tests {
         press(&mut host, Key::Named(NamedKey::Enter));
         assert!(host.state().quick_open.is_none());
         assert_eq!(host.state().active_tab().map(|tab| tab.title.as_str()), Some("main.rs"));
+    }
+
+    #[test]
+    fn project_search_opens_a_matching_line() {
+        let (mut host, _, _) = app("project-search");
+        host.state_mut().open_project_search();
+        typed(&mut host, "main");
+        assert!(has_text(&host, "src/main.rs:1  fn main() {}"));
+        press(&mut host, Key::Named(NamedKey::Enter));
+        assert_eq!(host.state().active_tab().map(|tab| tab.title.as_str()), Some("main.rs"));
+        assert_eq!(host.state().active_editor().unwrap().doc.cursor(), Pos::new(0, 0));
     }
 
     #[test]
