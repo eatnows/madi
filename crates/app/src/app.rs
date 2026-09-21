@@ -114,6 +114,7 @@ pub struct Madi {
     pub tree_rows: Vec<TreeRow>,
     pub sidebar_view: SidebarView,
     pub sidebar_width: f32,
+    sidebar_drag_x: Option<f32>,
     pub worktrees: Vec<WorktreeInfo>,
     pub pins: HashMap<String, String>,
     pub branches: Vec<String>,
@@ -160,6 +161,7 @@ impl Madi {
             tree_rows: Vec::new(),
             sidebar_view: SidebarView::Files,
             sidebar_width: 280.,
+            sidebar_drag_x: None,
             worktrees: Vec::new(),
             pins: HashMap::new(),
             branches: Vec::new(),
@@ -377,6 +379,20 @@ impl Madi {
 
     pub fn select(&mut self, path: PathBuf) {
         self.workspace_mut().selected = Some(path);
+    }
+
+    fn begin_sidebar_resize(&mut self, x: f32) {
+        self.sidebar_drag_x = Some(x);
+    }
+
+    fn resize_sidebar(&mut self, x: f32) {
+        let Some(previous) = self.sidebar_drag_x else { return };
+        self.sidebar_width = (self.sidebar_width + x - previous).clamp(180., 520.);
+        self.sidebar_drag_x = Some(x);
+    }
+
+    fn end_sidebar_resize(&mut self) {
+        self.sidebar_drag_x = None;
     }
 
     // ---- tabs --------------------------------------------------------------------------------
@@ -909,7 +925,13 @@ impl Madi {
                     .child(div().h(1.).bg(p.border_soft))
                     .child(body),
             )
-            .child(div().w(1.).bg(p.border))
+            .child(
+                div().w(4.).h_full().hover_bg(p.border).on_mouse_down(|s: &mut Madi, _, event| {
+                    if event.button == gyeol::MouseButton::Left {
+                        s.begin_sidebar_resize(event.pos.0);
+                    }
+                }).on_drag(|s: &mut Madi, _, event| s.resize_sidebar(event.pos.0)).on_mouse_up(|s: &mut Madi, _, _| s.end_sidebar_resize()),
+            )
     }
 
     fn tab_bar(&self, p: &Palette) -> El {
@@ -1300,6 +1322,19 @@ mod tests {
         assert!(!has_text(&host, &path), "no status bar");
         assert!(!has_text(&host, "Files"), "no sidebar");
         assert!(has_text(&host, &name), "the top bar stays");
+    }
+
+    #[test]
+    fn sidebar_resize_drag_is_clamped_and_ends_on_release() {
+        let (mut host, _, _) = app("sidebar-resize");
+        let app = host.state_mut();
+        app.begin_sidebar_resize(280.);
+        app.resize_sidebar(1_000.);
+        assert_eq!(app.sidebar_width, 520.);
+        app.resize_sidebar(-1_000.);
+        assert_eq!(app.sidebar_width, 180.);
+        app.end_sidebar_resize();
+        assert!(app.sidebar_drag_x.is_none());
     }
 
     #[test]
