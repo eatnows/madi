@@ -1,16 +1,13 @@
-//! Installing language plugins: a manifest names one `rules` asset — a JSON file of regex-based
-//! highlight and symbol patterns, in the spirit of a VS Code TextMate grammar rather than a real
-//! parser — fetched and checked against the SHA-256 the manifest declares, then stored under a
-//! per-plugin directory.
+//! Installing language plugins: a manifest names a grammar and a highlight-query file, each
+//! fetched and checked against a SHA-256 the manifest declares, then stored under a per-plugin
+//! directory. No parsing or highlighting yet — this crate only gets the files onto disk, verified;
+//! turning them into colored text is the next step, once a plugin is actually installed by someone.
 mod fetch;
-mod language;
 
 use std::{fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-pub use language::{Language, Symbol};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Asset {
@@ -25,13 +22,15 @@ pub struct Manifest {
     pub version: String,
     /// File extensions this plugin covers, without the dot (e.g. `"rs"`).
     pub extensions: Vec<String>,
-    pub rules: Asset,
+    pub grammar: Asset,
+    pub highlights: Asset,
 }
 
 #[derive(Clone, Debug)]
 pub struct InstalledPlugin {
     pub manifest: Manifest,
-    pub rules_path: PathBuf,
+    pub grammar_path: PathBuf,
+    pub highlights_path: PathBuf,
 }
 
 pub struct PluginStore {
@@ -54,7 +53,7 @@ impl PluginStore {
 
     fn read_installed(dir: PathBuf) -> Option<InstalledPlugin> {
         let manifest: Manifest = serde_json::from_str(&fs::read_to_string(dir.join("manifest.json")).ok()?).ok()?;
-        Some(InstalledPlugin { rules_path: dir.join("rules.json"), manifest })
+        Some(InstalledPlugin { grammar_path: dir.join("grammar.bin"), highlights_path: dir.join("highlights.scm"), manifest })
     }
 
     pub fn list(&self) -> Vec<InstalledPlugin> {
@@ -72,31 +71,31 @@ impl PluginStore {
         self.list().into_iter().find(|p| p.manifest.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
     }
 
-    /// Downloads the manifest at `manifest_url`, then its `rules` asset, verifying it against the
-    /// SHA-256 the manifest declares, and installs them, replacing any existing installation of
-    /// the same plugin id.
+    /// Downloads the manifest at `manifest_url`, then its grammar and highlight-query assets,
+    /// verifying each against the SHA-256 the manifest declares, and installs them, replacing any
+    /// existing installation of the same plugin id.
     pub fn install_from_url(&self, manifest_url: &str) -> Result<InstalledPlugin, String> {
         let manifest_bytes = fetch::fetch(manifest_url)?;
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|e| format!("invalid plugin manifest: {e}"))?;
         if manifest.id.is_empty() || manifest.extensions.is_empty() {
             return Err("the plugin manifest is missing an id or extensions".to_string());
         }
-        let rules = verified(&manifest.rules)?;
-        // Fail before touching disk if the rules don't even parse as a language definition.
-        language::Language::parse(&rules)?;
+        let grammar = verified(&manifest.grammar)?;
+        let highlights = verified(&manifest.highlights)?;
 
         fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let tmp = self.dir.join(format!(".{}.tmp", manifest.id));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-        fs::write(tmp.join("rules.json"), &rules).map_err(|e| e.to_string())?;
+        fs::write(tmp.join("grammar.bin"), &grammar).map_err(|e| e.to_string())?;
+        fs::write(tmp.join("highlights.scm"), &highlights).map_err(|e| e.to_string())?;
         fs::write(tmp.join("manifest.json"), &manifest_bytes).map_err(|e| e.to_string())?;
 
         let dir = self.plugin_dir(&manifest.id);
         let _ = fs::remove_dir_all(&dir);
         fs::rename(&tmp, &dir).map_err(|e| e.to_string())?;
 
-        Ok(InstalledPlugin { rules_path: dir.join("rules.json"), manifest })
+        Ok(InstalledPlugin { grammar_path: dir.join("grammar.bin"), highlights_path: dir.join("highlights.scm"), manifest })
     }
 
     pub fn uninstall(&self, id: &str) -> Result<(), String> {
@@ -125,27 +124,20 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    const RULES: &str = r#"{
-        "highlight": [
-            {"scope": "comment", "pattern": "//.*"},
-            {"scope": "string", "pattern": "\"([^\"\\\\]|\\\\.)*\""},
-            {"scope": "keyword", "pattern": "\\b(fn|let)\\b"}
-        ],
-        "symbols": [
-            {"kind": "function", "pattern": "fn\\s+([A-Za-z_][A-Za-z0-9_]*)"}
-        ]
-    }"#;
-
-    /// A plugin catalog on disk (manifest + rules file), served back to the store as `file://` URLs.
+    /// A plugin catalog on disk (manifest + two assets), served back to the store as `file://` URLs.
     fn write_catalog(dir: &std::path::Path, id: &str, extensions: &[&str]) -> String {
         std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(dir.join("rules.json"), RULES).unwrap();
+        let grammar = b"fake grammar bytes".to_vec();
+        let highlights = b"(identifier) @variable".to_vec();
+        std::fs::write(dir.join("grammar.bin"), &grammar).unwrap();
+        std::fs::write(dir.join("highlights.scm"), &highlights).unwrap();
         let manifest = Manifest {
             id: id.to_string(),
             name: id.to_string(),
             version: "1.0.0".to_string(),
             extensions: extensions.iter().map(|s| s.to_string()).collect(),
-            rules: Asset { url: format!("file://{}", dir.join("rules.json").display()), sha256: sha256_hex(RULES.as_bytes()) },
+            grammar: Asset { url: format!("file://{}", dir.join("grammar.bin").display()), sha256: sha256_hex(&grammar) },
+            highlights: Asset { url: format!("file://{}", dir.join("highlights.scm").display()), sha256: sha256_hex(&highlights) },
         };
         let manifest_path = dir.join("manifest.json");
         std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -165,7 +157,7 @@ mod tests {
 
         let installed = store.install_from_url(&manifest_url).unwrap();
         assert_eq!(installed.manifest.id, "rust");
-        assert_eq!(std::fs::read_to_string(&installed.rules_path).unwrap(), RULES);
+        assert_eq!(std::fs::read_to_string(&installed.highlights_path).unwrap(), "(identifier) @variable");
 
         assert_eq!(store.list().len(), 1);
         assert!(store.resolve_extension("RS").is_some(), "extension matching ignores case");
@@ -192,7 +184,7 @@ mod tests {
         let (store, dir) = store("checksum");
         let catalog = dir.join("catalog/rust");
         let url = write_catalog(&catalog, "rust", &["rs"]);
-        std::fs::write(catalog.join("rules.json"), "tampered").unwrap();
+        std::fs::write(catalog.join("grammar.bin"), b"tampered").unwrap();
 
         let err = store.install_from_url(&url).unwrap_err();
         assert!(err.contains("checksum mismatch"), "{err}");
@@ -204,26 +196,8 @@ mod tests {
         let (store, dir) = store("missing-field");
         std::fs::create_dir_all(&dir).unwrap();
         let manifest_path = dir.join("bad.json");
-        std::fs::write(&manifest_path, br#"{"id":"","name":"x","version":"1","extensions":[],"rules":{"url":"file:///x","sha256":"x"}}"#).unwrap();
+        std::fs::write(&manifest_path, br#"{"id":"","name":"x","version":"1","extensions":[],"grammar":{"url":"file:///x","sha256":"x"},"highlights":{"url":"file:///x","sha256":"x"}}"#).unwrap();
         let err = store.install_from_url(&format!("file://{}", manifest_path.display())).unwrap_err();
         assert!(err.contains("id or extensions"), "{err}");
-    }
-
-    #[test]
-    fn invalid_rules_are_rejected_before_anything_is_written() {
-        let (store, dir) = store("bad-rules");
-        let catalog = dir.join("catalog/rust");
-        let url = write_catalog(&catalog, "rust", &["rs"]);
-        std::fs::write(catalog.join("rules.json"), "not json").unwrap();
-        // rewrite manifest's checksum to match the now-broken rules file so it downloads but fails to parse
-        let broken = std::fs::read(catalog.join("rules.json")).unwrap();
-        let manifest = Manifest {
-            id: "rust".into(), name: "rust".into(), version: "1.0.0".into(), extensions: vec!["rs".into()],
-            rules: Asset { url: format!("file://{}", catalog.join("rules.json").display()), sha256: sha256_hex(&broken) },
-        };
-        std::fs::write(catalog.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-        let _ = url;
-        let err = store.install_from_url(&format!("file://{}", catalog.join("manifest.json").display())).unwrap_err();
-        assert!(store.list().is_empty(), "{err}");
     }
 }
