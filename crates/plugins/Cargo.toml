@@ -2,6 +2,7 @@
 name = "madi-plugins"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
 description = "Installing language plugins for Madi: downloaded, checksum-verified grammar and highlight-query files"
 
 [dependencies]
