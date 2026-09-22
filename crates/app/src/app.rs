@@ -169,12 +169,25 @@ pub struct Madi {
     pub error: Option<String>,
     pub blink_epoch: Instant,
     pub window_focused: bool,
+    plugin_store: madi_plugins::PluginStore,
+    pub plugins: Vec<madi_plugins::InstalledPlugin>,
+    pub plugin_install_url: String,
+    pub plugin_install_focused: bool,
 }
 
 impl Madi {
     pub fn new(initial: Option<String>, config: Config) -> Madi {
+        let plugin_dir = config.path().and_then(|p| p.parent()).map(|d| d.join("plugins"))
+            .or_else(madi_plugins::PluginStore::default_dir)
+            .unwrap_or_else(|| std::env::temp_dir().join("madi-plugins"));
+        let plugin_store = madi_plugins::PluginStore::at(plugin_dir);
+        let plugins = plugin_store.list();
         let mut app = Madi {
             config,
+            plugin_store,
+            plugins,
+            plugin_install_url: String::new(),
+            plugin_install_focused: false,
             repo: String::new(),
             workspaces: HashMap::new(),
             tree_rows: Vec::new(),
@@ -873,6 +886,63 @@ impl Madi {
         }
         if let gyeol::Ime::Commit(input) = ime {
             self.commit_message.push_str(input);
+        }
+        true
+    }
+
+    // ---- language plugins ---------------------------------------------------------------------
+
+    pub(crate) fn focus_plugin_url(&mut self) {
+        self.plugin_install_focused = true;
+    }
+
+    pub(crate) fn install_plugin(&mut self) {
+        let url = self.plugin_install_url.trim().to_string();
+        if url.is_empty() {
+            self.error = Some("Paste a plugin manifest URL first".into());
+            return;
+        }
+        match self.plugin_store.install_from_url(&url) {
+            Ok(_) => {
+                self.plugin_install_url.clear();
+                self.plugin_install_focused = false;
+                self.error = None;
+                self.plugins = self.plugin_store.list();
+            }
+            Err(reason) => self.error = Some(format!("Can't install plugin: {reason}")),
+        }
+    }
+
+    pub(crate) fn uninstall_plugin(&mut self, id: String) {
+        match self.plugin_store.uninstall(&id) {
+            Ok(()) => self.plugins = self.plugin_store.list(),
+            Err(reason) => self.error = Some(format!("Can't remove plugin: {reason}")),
+        }
+    }
+
+    fn plugin_url_owns_keys(&self) -> bool {
+        self.settings_open && self.settings_tab == SettingsTab::Plugins && self.plugin_install_focused
+    }
+
+    pub(crate) fn plugin_url_key(&mut self, key: &gyeol::Key, text: Option<&str>) -> bool {
+        if !self.plugin_url_owns_keys() {
+            return false;
+        }
+        match key {
+            gyeol::Key::Named(NamedKey::Escape) => self.plugin_install_focused = false,
+            gyeol::Key::Named(NamedKey::Enter) => self.install_plugin(),
+            gyeol::Key::Named(NamedKey::Backspace) => { self.plugin_install_url.pop(); }
+            _ => { if let Some(input) = text { self.plugin_install_url.push_str(input); } }
+        }
+        true
+    }
+
+    pub(crate) fn plugin_url_ime(&mut self, ime: &gyeol::Ime) -> bool {
+        if !self.plugin_url_owns_keys() {
+            return false;
+        }
+        if let gyeol::Ime::Commit(input) = ime {
+            self.plugin_install_url.push_str(input);
         }
         true
     }
@@ -1620,6 +1690,7 @@ impl View for Madi {
                 if self.project_search_key(key, text.as_deref(), cx) { return; }
                 if self.find_key(key, text.as_deref(), cx) { return; }
                 if self.commit_message_key(key, text.as_deref(), cx) { return; }
+                if self.plugin_url_key(key, text.as_deref()) { return; }
                 if self.picker_key(key, text.as_deref(), cx) {
                     return;
                 }
@@ -1659,6 +1730,7 @@ impl View for Madi {
             Event::Ime(ime) if self.quick_open_ime(ime) => {}
             Event::Ime(ime) if self.find_ime(ime, cx) => {}
             Event::Ime(ime) if self.commit_message_ime(ime) => {}
+            Event::Ime(ime) if self.plugin_url_ime(ime) => {}
             Event::Ime(ime) if self.picker_ime(ime) => {}
             _ if !self.settings_open && self.close_confirm.is_none() => self.editor_event(event, cx),
             _ => {}
@@ -2089,6 +2161,47 @@ mod tests {
         host.click_text("Plugins");
         assert_eq!(host.state().settings_tab, SettingsTab::Plugins);
         assert!(has_text(&host, "Language plugins"));
+        assert!(has_text(&host, "No plugins installed"));
+    }
+
+    #[test]
+    fn installing_and_removing_a_plugin_from_the_settings_page() {
+        use sha2::{Digest, Sha256};
+        let (mut host, root, _) = app("plugin-install");
+        let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let catalog = root.join("catalog");
+        std::fs::create_dir_all(&catalog).unwrap();
+        let (grammar, highlights) = (b"grammar bytes".to_vec(), b"(identifier) @variable".to_vec());
+        std::fs::write(catalog.join("grammar.bin"), &grammar).unwrap();
+        std::fs::write(catalog.join("highlights.scm"), &highlights).unwrap();
+        let manifest = format!(
+            r#"{{"id":"rust","name":"Rust","version":"1.0.0","extensions":["rs"],"grammar":{{"url":"file://{}","sha256":"{}"}},"highlights":{{"url":"file://{}","sha256":"{}"}}}}"#,
+            catalog.join("grammar.bin").display(), sha256(&grammar),
+            catalog.join("highlights.scm").display(), sha256(&highlights),
+        );
+        let manifest_path = catalog.join("manifest.json");
+        std::fs::write(&manifest_path, manifest).unwrap();
+
+        host.state_mut().open_settings();
+        host.state_mut().settings_tab = SettingsTab::Plugins;
+        host.frame();
+        assert!(has_text(&host, "No plugins installed"));
+
+        host.state_mut().focus_plugin_url();
+        assert!(host.state().plugin_install_focused);
+        for c in format!("file://{}", manifest_path.display()).chars() {
+            host.key(Key::Char(c.to_string()), Some(&c.to_string()));
+        }
+        press(&mut host, Key::Named(NamedKey::Enter));
+
+        assert!(host.state().error.is_none(), "{:?}", host.state().error);
+        assert!(!host.state().plugin_install_focused, "installing blurs the field");
+        assert_eq!(host.state().plugins.len(), 1);
+        assert!(has_text(&host, "Rust") && has_text(&host, ".rs  ·  v1.0.0"));
+
+        host.state_mut().uninstall_plugin("rust".to_string());
+        assert!(host.state().plugins.is_empty());
+        host.frame();
         assert!(has_text(&host, "No plugins installed"));
     }
 

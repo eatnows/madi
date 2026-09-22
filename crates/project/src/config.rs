@@ -57,18 +57,22 @@ pub struct Config {
     path: Option<PathBuf>,
 }
 
-fn config_path() -> Option<PathBuf> {
-    let dir = if cfg!(target_os = "macos") {
-        PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/madi")
+/// Where madi keeps its own files: settings, and (under `plugins/`) installed language plugins.
+pub fn app_support_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/madi"))
     } else if cfg!(target_os = "windows") {
-        PathBuf::from(std::env::var_os("APPDATA")?).join("madi")
+        Some(PathBuf::from(std::env::var_os("APPDATA")?).join("madi"))
     } else {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?
-            .join("madi")
-    };
-    Some(dir.join("config.json"))
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .map(|dir| dir.join("madi"))
+    }
+}
+
+fn config_path() -> Option<PathBuf> {
+    Some(app_support_dir()?.join("config.json"))
 }
 
 pub const RECENT_LIMIT: usize = 20;
@@ -76,6 +80,12 @@ pub const DEFAULT_FONT_SIZE: f32 = 13.0;
 pub const FONT_SIZE_RANGE: (f32, f32) = (10.0, 24.0);
 
 impl Config {
+    /// Where this config was (or would be) read from, so a caller can derive sibling paths from
+    /// it (e.g. plugin storage) without hardcoding `app_support_dir()` again.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
     /// The editor's font size, kept inside a range the layout copes with even if the file was edited by hand.
     pub fn font_size(&self) -> f32 {
         self.editor_font_size.unwrap_or(DEFAULT_FONT_SIZE).clamp(FONT_SIZE_RANGE.0, FONT_SIZE_RANGE.1)

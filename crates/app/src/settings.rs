@@ -134,18 +134,43 @@ impl Madi {
     }
 
     fn plugins_settings(&self, p: &Palette) -> El {
-        div()
-            .child(setting_row(
-                p,
-                "Language plugins",
-                "Install language support for syntax highlighting, completions, and diagnostics.",
-                cell("Browse plugins", p.text_dim).border(1., p.border).rounded(6.),
-            ))
+        let focused = self.plugin_install_focused;
+        let url = self.plugin_install_url.clone();
+        let shown = if url.is_empty() && !focused { "Plugin manifest URL (https:// or file://)".to_string() } else if focused { format!("{url}│") } else { url.clone() };
+        let install_row = div().row().items_center().gap(8.)
             .child(
-                div().mt(20.).p(16.).rounded(6.).border(1., p.border_soft).bg(p.panel)
-                    .child(text("No plugins installed").text_size(13.).text_color(p.text_strong))
-                    .child(text("Language support will be available here after the plugin registry is connected.").mt(6.).text_size(12.).text_color(p.text_dim)),
+                div().grow().px(10.).py(7.).rounded(6.).border(1., if focused { p.amber } else { p.border }).bg(p.bg)
+                    .on_click(|s: &mut Madi, _| s.focus_plugin_url())
+                    .child(text(shown).text_size(12.).text_family(MONO).text_color(if url.is_empty() && !focused { p.text_dim } else { p.text_strong })),
             )
+            .child(cell("Install", p.text_strong).bg(p.selected).rounded(6.).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.install_plugin()));
+
+        let list = if self.plugins.is_empty() {
+            div().mt(20.).p(16.).rounded(6.).border(1., p.border_soft).bg(p.panel)
+                .child(text("No plugins installed").text_size(13.).text_color(p.text_strong))
+                .child(text("Paste a plugin manifest URL above to install its grammar and highlight query.").mt(6.).text_size(12.).text_color(p.text_dim))
+        } else {
+            let rows = self.plugins.iter().map(|installed| {
+                let id = installed.manifest.id.clone();
+                let extensions = installed.manifest.extensions.join(", ");
+                div().col()
+                    .child(
+                        div().row().items_center().justify_between().py(10.)
+                            .child(
+                                div().gap(2.)
+                                    .child(text(installed.manifest.name.clone()).text_size(13.).text_color(p.text_strong))
+                                    .child(text(format!(".{extensions}  ·  v{}", installed.manifest.version)).text_size(11.).text_color(p.text_dim)),
+                            )
+                            .child(cell("Remove", p.red).hover_bg(p.selected).rounded(6.).on_click(move |s: &mut Madi, _| s.uninstall_plugin(id.clone()))),
+                    )
+                    .child(div().h(1.).bg(p.border_soft))
+            });
+            div().mt(20.).children(rows)
+        };
+        div()
+            .child(setting_row(p, "Language plugins", "Install a language's syntax grammar and highlight query, by URL.", div()))
+            .child(install_row)
+            .child(list)
     }
 
     fn nav_item(&self, p: &Palette, tab: SettingsTab) -> El {
