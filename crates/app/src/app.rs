@@ -1,7 +1,9 @@
 //! The app: project rail, top bar, sidebar with the file tree, tabs with editors, status bar.
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -76,6 +78,11 @@ struct QuickOpen {
 }
 
 struct ProjectSearch {
+    query: String,
+    highlighted: usize,
+}
+
+struct SymbolPicker {
     query: String,
     highlighted: usize,
 }
@@ -173,6 +180,10 @@ pub struct Madi {
     pub plugins: Vec<madi_plugins::InstalledPlugin>,
     pub plugin_install_url: String,
     pub plugin_install_focused: bool,
+    /// Compiled language rules, by lowercase file extension; cleared on install/uninstall. A
+    /// `RefCell` so both rendering (`&self`) and mutation paths can resolve/cache through it.
+    languages: RefCell<HashMap<String, Rc<madi_plugins::Language>>>,
+    symbol_picker: Option<SymbolPicker>,
 }
 
 impl Madi {
@@ -188,6 +199,8 @@ impl Madi {
             plugins,
             plugin_install_url: String::new(),
             plugin_install_focused: false,
+            languages: RefCell::new(HashMap::new()),
+            symbol_picker: None,
             repo: String::new(),
             workspaces: HashMap::new(),
             tree_rows: Vec::new(),
@@ -696,7 +709,8 @@ impl Madi {
             }
         };
         self.error = None;
-        let tab = Tab { path: path.clone(), title: name, preview, editor: Editor::new(&text, path) };
+        let language = path.extension().and_then(|e| e.to_str()).and_then(|ext| self.language_for_ext(ext));
+        let tab = Tab { path: path.clone(), title: name, preview, editor: Editor::new(&text, path, language) };
         let ws = self.workspace_mut();
         ws.showing_diff = false;
         let ix = match (preview, ws.tabs.iter().position(|t| t.preview)) {
@@ -908,6 +922,7 @@ impl Madi {
                 self.plugin_install_focused = false;
                 self.error = None;
                 self.plugins = self.plugin_store.list();
+                self.languages.borrow_mut().clear();
             }
             Err(reason) => self.error = Some(format!("Can't install plugin: {reason}")),
         }
@@ -915,8 +930,110 @@ impl Madi {
 
     pub(crate) fn uninstall_plugin(&mut self, id: String) {
         match self.plugin_store.uninstall(&id) {
-            Ok(()) => self.plugins = self.plugin_store.list(),
+            Ok(()) => {
+                self.plugins = self.plugin_store.list();
+                self.languages.borrow_mut().clear();
+            }
             Err(reason) => self.error = Some(format!("Can't remove plugin: {reason}")),
+        }
+    }
+
+    /// The compiled language rules for `ext` (a plugin's installed extension), cached across calls.
+    fn language_for_ext(&self, ext: &str) -> Option<Rc<madi_plugins::Language>> {
+        let key = ext.to_ascii_lowercase();
+        if let Some(lang) = self.languages.borrow().get(&key) {
+            return Some(lang.clone());
+        }
+        let installed = self.plugin_store.resolve_extension(&key)?;
+        let lang = Rc::new(madi_plugins::Language::load(&installed.rules_path).ok()?);
+        self.languages.borrow_mut().insert(key, lang.clone());
+        Some(lang)
+    }
+
+    /// Every symbol definition across the project's files whose extension has a plugin installed.
+    fn project_symbols(&self) -> Vec<(PathBuf, madi_plugins::Symbol)> {
+        let mut out = Vec::new();
+        for path in self.project_files() {
+            let Some(lang) = path.extension().and_then(|e| e.to_str()).and_then(|ext| self.language_for_ext(ext)) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            out.extend(lang.symbols(text.lines()).into_iter().map(|s| (path.clone(), s)));
+        }
+        out
+    }
+
+    // ---- go to symbol / find usages -----------------------------------------------------------
+
+    /// The identifier at the caret, if any (used to seed "go to symbol" and "find usages").
+    fn word_at_caret(&self) -> Option<String> {
+        let ed = self.active_editor()?;
+        let caret = ed.doc.cursor();
+        let line = ed.doc.line(caret.row);
+        let (a, b) = editor::word_bounds(line, caret.col);
+        (a < b).then(|| line[a..b].to_string())
+    }
+
+    fn open_symbol_picker(&mut self) {
+        if self.repo.is_empty() {
+            self.error = Some("Open a project before going to a symbol".into());
+            return;
+        }
+        let query = self.word_at_caret().unwrap_or_default();
+        self.symbol_picker = Some(SymbolPicker { query, highlighted: 0 });
+    }
+
+    /// Symbols whose name contains the (ordered-character) query, exact-name matches first — so
+    /// jumping straight to a selected identifier's definition is the common case of picking result 1.
+    fn symbol_picker_results(&self) -> Vec<(PathBuf, madi_plugins::Symbol)> {
+        let query = self.symbol_picker.as_ref().map_or("", |p| p.query.as_str());
+        let mut results: Vec<_> = self
+            .project_symbols()
+            .into_iter()
+            .filter(|(_, s)| query.is_empty() || s.name.to_lowercase().contains(&query.to_lowercase()))
+            .collect();
+        results.sort_by_key(|(path, s)| (s.name != query, path.clone(), s.line));
+        results
+    }
+
+    fn activate_symbol(&mut self, row: usize) {
+        let Some((path, symbol)) = self.symbol_picker_results().into_iter().nth(row) else { return };
+        self.symbol_picker = None;
+        self.open_file(path, false);
+        if let Some(ed) = self.active_editor_mut() {
+            ed.doc.set_cursor(madi_text::Pos::new(symbol.line, 0), false);
+        }
+    }
+
+    fn symbol_picker_key(&mut self, key: &gyeol::Key, text: Option<&str>, cx: &Cx) -> bool {
+        if self.symbol_picker.is_none() { return false; }
+        match key {
+            gyeol::Key::Named(NamedKey::Escape) => self.symbol_picker = None,
+            gyeol::Key::Named(NamedKey::Enter) => self.activate_symbol(self.symbol_picker.as_ref().map_or(0, |p| p.highlighted)),
+            gyeol::Key::Named(NamedKey::ArrowUp) => if let Some(p) = &mut self.symbol_picker { p.highlighted = p.highlighted.saturating_sub(1); },
+            gyeol::Key::Named(NamedKey::ArrowDown) => { let last = self.symbol_picker_results().len().saturating_sub(1); if let Some(p) = &mut self.symbol_picker { p.highlighted = (p.highlighted + 1).min(last); } }
+            gyeol::Key::Named(NamedKey::Backspace) => if let Some(p) = &mut self.symbol_picker { p.query.pop(); p.highlighted = 0; },
+            _ if !cx.modifiers.command() => if let (Some(input), Some(p)) = (text, &mut self.symbol_picker) { p.query.push_str(input); p.highlighted = 0; },
+            _ => {}
+        }
+        true
+    }
+
+    fn symbol_picker_ime(&mut self, ime: &gyeol::Ime) -> bool {
+        let Some(p) = &mut self.symbol_picker else { return false };
+        if let gyeol::Ime::Commit(input) = ime {
+            p.query.push_str(input);
+            p.highlighted = 0;
+        }
+        true
+    }
+
+    /// Opens project-wide search prefilled with the identifier at the caret — an approximation of
+    /// "find usages": it matches the name as plain text, so results can include unrelated matches
+    /// (a shadowed local, a comment, a same-named member on another type).
+    fn open_find_usages(&mut self) {
+        let Some(word) = self.word_at_caret() else { self.error = Some("Place the caret on a word first".into()); return };
+        self.open_project_search();
+        if let Some(search) = &mut self.project_search {
+            search.query = word;
         }
     }
 
@@ -1190,6 +1307,27 @@ impl Madi {
         let search = if query.is_empty() { "Search files".into() } else { format!("{query}│") };
         Some(
             div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.25)).on_click(|s: &mut Madi, _| s.quick_open = None).child(
+                div().w(560.).max_h(420.).rounded(8.).border(1., p.border).bg(p.chrome).on_click(|_: &mut Madi, _| {})
+                    .child(div().px(12.).py(10.).border(1., p.border_soft).child(text(search).text_size(13.).text_family(editor::MONO).text_color(if query.is_empty() { p.text_dim } else { p.text_strong })))
+                    .child(div().max_h(360.).overflow_y_scroll().p(4.).gap(2.).children(rows)),
+            ),
+        )
+    }
+
+    fn symbol_picker_view(&self, p: &Palette) -> Option<El> {
+        let picker = self.symbol_picker.as_ref()?;
+        let query = picker.query.clone();
+        let rows = self.symbol_picker_results().into_iter().take(30).enumerate().map(|(ix, (path, symbol))| {
+            let location = path.strip_prefix(&self.repo).unwrap_or(&path).display().to_string();
+            let label = format!("{}  ·  {}", symbol.name, symbol.kind);
+            div().row().items_center().justify_between().px(10.).py(6.).rounded(4.).bg(if picker.highlighted == ix { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
+                .on_click(move |s: &mut Madi, _| s.activate_symbol(ix))
+                .child(text(label).text_size(12.).text_family(editor::MONO).text_color(p.text_strong))
+                .child(text(format!("{location}:{}", symbol.line + 1)).text_size(11.).text_color(p.text_dim))
+        });
+        let search = if query.is_empty() { "Go to symbol".into() } else { format!("{query}│") };
+        Some(
+            div().inset(0.).items_center().justify_center().bg(Color::hex(0).with_alpha(0.25)).on_click(|s: &mut Madi, _| s.symbol_picker = None).child(
                 div().w(560.).max_h(420.).rounded(8.).border(1., p.border).bg(p.chrome).on_click(|_: &mut Madi, _| {})
                     .child(div().px(12.).py(10.).border(1., p.border_soft).child(text(search).text_size(13.).text_family(editor::MONO).text_color(if query.is_empty() { p.text_dim } else { p.text_strong })))
                     .child(div().max_h(360.).overflow_y_scroll().p(4.).gap(2.).children(rows)),
@@ -1676,6 +1814,7 @@ impl View for Madi {
             root = root.child(quick_open);
         }
         if let Some(search) = self.project_search_view(&p) { root = root.child(search); }
+        if let Some(symbols) = self.symbol_picker_view(&p) { root = root.child(symbols); }
         root
     }
 
@@ -1691,6 +1830,7 @@ impl View for Madi {
                 if self.find_key(key, text.as_deref(), cx) { return; }
                 if self.commit_message_key(key, text.as_deref(), cx) { return; }
                 if self.plugin_url_key(key, text.as_deref()) { return; }
+                if self.symbol_picker_key(key, text.as_deref(), cx) { return; }
                 if self.picker_key(key, text.as_deref(), cx) {
                     return;
                 }
@@ -1725,12 +1865,21 @@ impl View for Madi {
                     self.open_find(replace, cx);
                     return;
                 }
+                if matches!(key, gyeol::Key::Char(c) if c.eq_ignore_ascii_case("o")) && cx.modifiers.command() && cx.modifiers.shift {
+                    self.open_symbol_picker();
+                    return;
+                }
+                if matches!(key, gyeol::Key::Char(c) if c.eq_ignore_ascii_case("u")) && cx.modifiers.command() && cx.modifiers.shift {
+                    self.open_find_usages();
+                    return;
+                }
                 self.editor_event(event, cx);
             }
             Event::Ime(ime) if self.quick_open_ime(ime) => {}
             Event::Ime(ime) if self.find_ime(ime, cx) => {}
             Event::Ime(ime) if self.commit_message_ime(ime) => {}
             Event::Ime(ime) if self.plugin_url_ime(ime) => {}
+            Event::Ime(ime) if self.symbol_picker_ime(ime) => {}
             Event::Ime(ime) if self.picker_ime(ime) => {}
             _ if !self.settings_open && self.close_confirm.is_none() => self.editor_event(event, cx),
             _ => {}
@@ -2171,13 +2320,19 @@ mod tests {
         let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
         let catalog = root.join("catalog");
         std::fs::create_dir_all(&catalog).unwrap();
-        let (grammar, highlights) = (b"grammar bytes".to_vec(), b"(identifier) @variable".to_vec());
-        std::fs::write(catalog.join("grammar.bin"), &grammar).unwrap();
-        std::fs::write(catalog.join("highlights.scm"), &highlights).unwrap();
+        let rules = br#"{
+            "highlight": [
+                {"scope": "comment", "pattern": "//.*"},
+                {"scope": "keyword", "pattern": "\\b(fn|let)\\b"}
+            ],
+            "symbols": [
+                {"kind": "function", "pattern": "fn\\s+([A-Za-z_][A-Za-z0-9_]*)"}
+            ]
+        }"#;
+        std::fs::write(catalog.join("rules.json"), rules).unwrap();
         let manifest = format!(
-            r#"{{"id":"rust","name":"Rust","version":"1.0.0","extensions":["rs"],"grammar":{{"url":"file://{}","sha256":"{}"}},"highlights":{{"url":"file://{}","sha256":"{}"}}}}"#,
-            catalog.join("grammar.bin").display(), sha256(&grammar),
-            catalog.join("highlights.scm").display(), sha256(&highlights),
+            r#"{{"id":"rust","name":"Rust","version":"1.0.0","extensions":["rs"],"rules":{{"url":"file://{}","sha256":"{}"}}}}"#,
+            catalog.join("rules.json").display(), sha256(rules),
         );
         let manifest_path = catalog.join("manifest.json");
         std::fs::write(&manifest_path, manifest).unwrap();
@@ -2203,6 +2358,74 @@ mod tests {
         assert!(host.state().plugins.is_empty());
         host.frame();
         assert!(has_text(&host, "No plugins installed"));
+    }
+
+    #[test]
+    fn a_rust_file_is_syntax_highlighted_once_the_plugin_is_installed() {
+        use sha2::{Digest, Sha256};
+        let (mut host, root, path) = app("highlight");
+        let rules = br#"{"highlight":[{"scope":"keyword","pattern":"\\bfn\\b"}]}"#;
+        let catalog = root.join("catalog");
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::write(catalog.join("rules.json"), rules).unwrap();
+        let manifest = format!(
+            r#"{{"id":"rust","name":"Rust","version":"1.0.0","extensions":["rs"],"rules":{{"url":"file://{}","sha256":"{:x}"}}}}"#,
+            catalog.join("rules.json").display(), Sha256::digest(rules),
+        );
+        let manifest_path = catalog.join("manifest.json");
+        std::fs::write(&manifest_path, manifest).unwrap();
+        host.state_mut().open_settings();
+        host.state_mut().settings_tab = SettingsTab::Plugins;
+        host.state_mut().plugin_install_url = format!("file://{}", manifest_path.display());
+        host.state_mut().install_plugin();
+        assert!(host.state().error.is_none(), "{:?}", host.state().error);
+        host.state_mut().close_settings();
+
+        let rust_file = Path::new(&path).join("main.rs");
+        std::fs::write(&rust_file, "fn main() {}\n").unwrap();
+        host.state_mut().open_file(rust_file, false);
+        let ed = host.state().active_editor().unwrap();
+        assert!(ed.language.is_some(), "the editor resolved the installed plugin by extension");
+        let spans = ed.language.as_ref().unwrap().tokenize("fn main() {}");
+        assert!(spans.iter().any(|(r, scope)| *scope == Some("keyword") && &"fn main() {}"[r.clone()] == "fn"));
+    }
+
+    #[test]
+    fn go_to_symbol_jumps_across_files_and_find_usages_prefills_project_search() {
+        use sha2::{Digest, Sha256};
+        let (mut host, root, path) = app("symbols");
+        let rules = br#"{"symbols":[{"kind":"function","pattern":"fn\\s+([A-Za-z_][A-Za-z0-9_]*)"}]}"#;
+        let catalog = root.join("catalog");
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::write(catalog.join("rules.json"), rules).unwrap();
+        let manifest = format!(
+            r#"{{"id":"rust","name":"Rust","version":"1.0.0","extensions":["rs"],"rules":{{"url":"file://{}","sha256":"{:x}"}}}}"#,
+            catalog.join("rules.json").display(), Sha256::digest(rules),
+        );
+        let manifest_path = catalog.join("manifest.json");
+        host.state_mut().plugin_install_url = format!("file://{}", manifest_path.display());
+
+        let proj = Path::new(&path);
+        std::fs::write(&manifest_path, manifest).unwrap();
+        std::fs::write(proj.join("src/a.rs"), "fn helper() {}\n").unwrap();
+        std::fs::write(proj.join("src/b.rs"), "fn main() {\n    helper();\n}\n").unwrap();
+        host.state_mut().install_plugin();
+        assert!(host.state().error.is_none(), "{:?}", host.state().error);
+
+        host.state_mut().open_file(proj.join("src/b.rs"), false);
+        // Caret starts at (0,0) — on "fn" in "fn main()", not "helper". Move to the call on line 2.
+        host.state_mut().active_editor_mut().unwrap().doc.set_cursor(madi_text::Pos::new(1, 5), false);
+
+        host.state_mut().open_symbol_picker();
+        assert_eq!(host.state().symbol_picker.as_ref().unwrap().query, "helper", "prefilled from the word at the caret");
+        press(&mut host, Key::Named(NamedKey::Enter));
+        assert!(host.state().symbol_picker.is_none());
+        assert_eq!(host.state().active_tab().unwrap().path, proj.join("src/a.rs"), "jumped to the file that defines it");
+        assert_eq!(host.state().active_editor().unwrap().doc.cursor(), madi_text::Pos::new(0, 0));
+
+        host.state_mut().active_editor_mut().unwrap().doc.set_cursor(madi_text::Pos::new(0, 5), false);
+        host.state_mut().open_find_usages();
+        assert_eq!(host.state().project_search.as_ref().unwrap().query, "helper");
     }
 
     fn git(dir: &Path, args: &[&str]) {

@@ -1,5 +1,5 @@
 //! The text editor: a view of a `Document` with a gutter, caret, selection and input handling.
-use std::{cell::Cell, path::PathBuf, time::Instant};
+use std::{cell::Cell, path::PathBuf, rc::Rc, time::Instant};
 
 use gyeol::{div, list_rows, text, Cx, Element, Event, Ime, Key, MouseEvent, NamedKey, Rect, Shaper, TextStyle};
 use madi_text::{find_in_line, Document, Pos};
@@ -21,11 +21,13 @@ pub struct Editor {
     pub path: PathBuf,
     /// The widest line in columns, cached for one document revision.
     cols: Cell<(u64, usize)>,
+    /// The installed plugin's highlight/symbol rules for this file's extension, if any.
+    pub language: Option<Rc<madi_plugins::Language>>,
 }
 
 impl Editor {
-    pub fn new(text: &str, path: PathBuf) -> Editor {
-        Editor { doc: Document::new(text), path, cols: Cell::new((u64::MAX, 0)) }
+    pub fn new(text: &str, path: PathBuf, language: Option<Rc<madi_plugins::Language>>) -> Editor {
+        Editor { doc: Document::new(text), path, cols: Cell::new((u64::MAX, 0)), language }
     }
 
     pub fn row_h(size: f32) -> f32 {
@@ -110,7 +112,13 @@ fn line_row(ed: &Editor, row: usize, size: f32, row_h: f32, char_w: f32, p: &Pal
             area = area.child(div().absolute().left(x0).top(row_h - 3.).w((x1 - x0).max(0.)).h(1.5).bg(p.text));
         }
     }
-    area = area.child(text(line.to_string()));
+    if let Some(lang) = &ed.language {
+        for (range, scope) in lang.tokenize(line) {
+            area = area.child(text(line[range].to_string()).text_color(scope.map_or(p.text, |s| p.syntax_color(s))));
+        }
+    } else {
+        area = area.child(text(line.to_string()));
+    }
     let caret = doc.cursor();
     if caret_visible && caret.row == row {
         let x = shaper.caret_x(line, style, caret.col);
@@ -124,7 +132,7 @@ fn line_row(ed: &Editor, row: usize, size: f32, row_h: f32, char_w: f32, p: &Pal
 // ---- input -----------------------------------------------------------------------------------
 
 /// The word around byte `col` of `line` (letters, digits and `_`), as byte offsets.
-fn word_bounds(line: &str, col: usize) -> (usize, usize) {
+pub(crate) fn word_bounds(line: &str, col: usize) -> (usize, usize) {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let col = col.min(line.len());
     let mut start = col;

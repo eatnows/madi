@@ -148,7 +148,7 @@ impl Madi {
         let list = if self.plugins.is_empty() {
             div().mt(20.).p(16.).rounded(6.).border(1., p.border_soft).bg(p.panel)
                 .child(text("No plugins installed").text_size(13.).text_color(p.text_strong))
-                .child(text("Paste a plugin manifest URL above to install its grammar and highlight query.").mt(6.).text_size(12.).text_color(p.text_dim))
+                .child(text("Paste a plugin manifest URL above to install its highlight and symbol rules.").mt(6.).text_size(12.).text_color(p.text_dim))
         } else {
             let rows = self.plugins.iter().map(|installed| {
                 let id = installed.manifest.id.clone();
@@ -168,7 +168,7 @@ impl Madi {
             div().mt(20.).children(rows)
         };
         div()
-            .child(setting_row(p, "Language plugins", "Install a language's syntax grammar and highlight query, by URL.", div()))
+            .child(setting_row(p, "Language plugins", "Install a language's highlight and symbol rules, by URL.", div()))
             .child(install_row)
             .child(list)
     }
