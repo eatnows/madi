@@ -14,6 +14,7 @@ madi-project = { path = "../project" }
 madi-text = { path = "../text" }
 madi-git = { path = "../git" }
 madi-plugins = { path = "../plugins" }
+madi-syntax = { path = "../syntax" }
 
 [dev-dependencies]
 sha2 = "0.10"

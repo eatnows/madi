@@ -1,5 +1,11 @@
 //! The text editor: a view of a `Document` with a gutter, caret, selection and input handling.
-use std::{cell::Cell, path::PathBuf, time::Instant};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    path::PathBuf,
+    rc::Rc,
+    time::Instant,
+};
 
 use gyeol::{div, list_rows, text, Cx, Element, Event, Ime, Key, MouseEvent, NamedKey, Rect, Shaper, TextStyle};
 use madi_text::{find_in_line, Document, Pos};
@@ -15,17 +21,32 @@ pub const GUTTER_W: f32 = 56.;
 const RIGHT_MARGIN: f32 = 80.;
 
 type El = Element<Madi>;
+type HighlightLines = Vec<Vec<(Range<usize>, &'static str)>>;
 
 pub struct Editor {
     pub doc: Document,
     pub path: PathBuf,
     /// The widest line in columns, cached for one document revision.
     cols: Cell<(u64, usize)>,
+    /// The bundled grammar for this file's extension, if Madi ships one.
+    pub language: Option<Rc<madi_syntax::Language>>,
+    /// Highlight spans per line, cached for one document revision (re-parses the whole file when
+    /// stale — simple, and fast enough for tree-sitter at interactive sizes).
+    highlights: RefCell<(u64, Rc<HighlightLines>)>,
 }
 
 impl Editor {
-    pub fn new(text: &str, path: PathBuf) -> Editor {
-        Editor { doc: Document::new(text), path, cols: Cell::new((u64::MAX, 0)) }
+    pub fn new(text: &str, path: PathBuf, language: Option<Rc<madi_syntax::Language>>) -> Editor {
+        Editor { doc: Document::new(text), path, cols: Cell::new((u64::MAX, 0)), language, highlights: RefCell::new((u64::MAX, Rc::new(Vec::new()))) }
+    }
+
+    fn highlighted_lines(&self) -> Rc<HighlightLines> {
+        let mut cache = self.highlights.borrow_mut();
+        if cache.0 != self.doc.revision() {
+            let lines = self.language.as_ref().map(|lang| lang.highlight_lines(&self.doc.text())).unwrap_or_default();
+            *cache = (self.doc.revision(), Rc::new(lines));
+        }
+        cache.1.clone()
     }
 
     pub fn row_h(size: f32) -> f32 {
@@ -110,7 +131,22 @@ fn line_row(ed: &Editor, row: usize, size: f32, row_h: f32, char_w: f32, p: &Pal
             area = area.child(div().absolute().left(x0).top(row_h - 3.).w((x1 - x0).max(0.)).h(1.5).bg(p.text));
         }
     }
-    area = area.child(text(line.to_string()));
+    if ed.language.is_some() {
+        let lines = ed.highlighted_lines();
+        let mut pos = 0;
+        for (range, bucket) in lines.get(row).cloned().unwrap_or_default() {
+            if range.start > pos {
+                area = area.child(text(line[pos..range.start].to_string()));
+            }
+            area = area.child(text(line[range.clone()].to_string()).text_color(p.syntax_color(bucket)));
+            pos = range.end;
+        }
+        if pos < line.len() {
+            area = area.child(text(line[pos..].to_string()));
+        }
+    } else {
+        area = area.child(text(line.to_string()));
+    }
     let caret = doc.cursor();
     if caret_visible && caret.row == row {
         let x = shaper.caret_x(line, style, caret.col);
@@ -124,7 +160,7 @@ fn line_row(ed: &Editor, row: usize, size: f32, row_h: f32, char_w: f32, p: &Pal
 // ---- input -----------------------------------------------------------------------------------
 
 /// The word around byte `col` of `line` (letters, digits and `_`), as byte offsets.
-fn word_bounds(line: &str, col: usize) -> (usize, usize) {
+pub(crate) fn word_bounds(line: &str, col: usize) -> (usize, usize) {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let col = col.min(line.len());
     let mut start = col;

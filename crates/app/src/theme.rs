@@ -26,6 +26,10 @@ pub struct Palette {
     pub del_fg: Color,
     pub del_strong_bg: Color,
     pub del_strong_fg: Color,
+    pub syntax_keyword: Color,
+    pub syntax_string: Color,
+    pub syntax_number: Color,
+    pub syntax_type: Color,
 }
 
 impl Palette {
@@ -53,6 +57,23 @@ impl Palette {
             del_fg: c(0xb99a9a, 0x8a3f3f),
             del_strong_bg: c(0x4a2a2a, 0xf2d0d0),
             del_strong_fg: c(0xe8cccc, 0x6b2c2c),
+            syntax_keyword: c(0x7aa2f7, 0x2952cc),
+            syntax_string: c(0x9ece6a, 0x3f7d20),
+            syntax_number: c(0xd19a66, 0xa15c00),
+            syntax_type: c(0x7dcfff, 0x0f7b8a),
+        }
+    }
+
+    /// The color for a tree-sitter highlight bucket (see `madi_syntax::Language::highlight_lines`);
+    /// an unrecognized bucket or a file with no bundled grammar falls back to the plain text color.
+    pub fn syntax_color(&self, bucket: &str) -> Color {
+        match bucket {
+            "keyword" => self.syntax_keyword,
+            "string" => self.syntax_string,
+            "number" => self.syntax_number,
+            "type" => self.syntax_type,
+            "comment" => self.text_dim,
+            _ => self.text,
         }
     }
 }
