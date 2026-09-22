@@ -49,6 +49,7 @@ pub enum Focus {
     Tree,
     Editor,
     Find,
+    CommitMessage,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +137,7 @@ pub struct Madi {
     pub selected_worktree: Option<usize>,
     pub selected_change: Option<usize>,
     pub worktree_issue: Option<Issue>,
+    pub commit_message: String,
     branch_picker: Option<BranchPicker>,
     context_menu: Option<ContextMenu>,
     quick_open: Option<QuickOpen>,
@@ -187,6 +189,7 @@ impl Madi {
             selected_worktree: None,
             selected_change: None,
             worktree_issue: None,
+            commit_message: String::new(),
             branch_picker: None,
             context_menu: None,
             quick_open: None,
@@ -796,18 +799,82 @@ impl Madi {
     fn select_worktree(&mut self, ix: usize) {
         let Some(worktree) = self.worktrees.get(ix) else { return };
         self.selected_worktree = Some(ix);
+        self.commit_message.clear();
+        let branch = worktree.branch.clone();
+        self.reload_changes();
+        if self.git_graph_open && self.graph_follow {
+            if let Some(branch) = branch { self.load_graph(branch); }
+        }
+    }
+
+    /// Reloads the selected worktree's changes (vs base, staged, unstaged) without disturbing which
+    /// worktree or the git graph — used after selecting a worktree and after every stage/commit.
+    fn reload_changes(&mut self) {
         self.selected_change = None;
         self.changes.clear();
         self.error = None;
+        let Some(worktree) = self.selected_worktree.and_then(|i| self.worktrees.get(i)) else { return };
         let base = self.pins.get(&worktree.path).cloned().unwrap_or_default();
-        let branch = worktree.branch.clone();
         match diff::diff_against_base(worktree.path.clone(), base) {
             Ok(result) => self.changes = result.files,
             Err(reason) => self.error = Some(format!("Can't load changes: {reason}")),
         }
-        if self.git_graph_open && self.graph_follow {
-            if let Some(branch) = branch { self.load_graph(branch); }
+    }
+
+    /// Stages (`section == "unstaged"`) or unstages (`section == "staged"`) `self.changes[ix]`.
+    fn toggle_stage(&mut self, ix: usize) {
+        let Some(worktree) = self.selected_worktree.and_then(|i| self.worktrees.get(i)) else { return };
+        let Some(file) = self.changes.get(ix) else { return };
+        let (path, staged) = (file.path.clone(), file.section == "staged");
+        let result = if staged { diff::unstage_path(worktree.path.clone(), path) } else { diff::stage_path(worktree.path.clone(), path) };
+        match result {
+            Ok(()) => self.reload_changes(),
+            Err(reason) => self.error = Some(format!("Can't {}: {reason}", if staged { "unstage" } else { "stage" })),
         }
+    }
+
+    fn open_commit_message(&mut self) {
+        if self.selected_worktree.is_none() { self.error = Some("Select a worktree before committing".into()); return; }
+        self.focus = Focus::CommitMessage;
+    }
+
+    fn do_commit(&mut self) {
+        let Some(worktree) = self.selected_worktree.and_then(|i| self.worktrees.get(i)) else { return };
+        let message = self.commit_message.trim().to_string();
+        if message.is_empty() { self.error = Some("Write a commit message first".into()); return; }
+        match diff::commit(worktree.path.clone(), message) {
+            Ok(()) => { self.commit_message.clear(); self.focus = Focus::Tree; self.reload_changes(); }
+            Err(reason) => self.error = Some(format!("Can't commit: {reason}")),
+        }
+    }
+
+    fn commit_message_owns_keys(&self) -> bool {
+        self.focus == Focus::CommitMessage
+    }
+
+    fn commit_message_key(&mut self, key: &gyeol::Key, text: Option<&str>, cx: &Cx) -> bool {
+        if !self.commit_message_owns_keys() {
+            return false;
+        }
+        match key {
+            gyeol::Key::Named(NamedKey::Escape) => self.focus = Focus::Tree,
+            gyeol::Key::Named(NamedKey::Enter) if cx.modifiers.command() => self.do_commit(),
+            gyeol::Key::Named(NamedKey::Enter) => self.commit_message.push('\n'),
+            gyeol::Key::Named(NamedKey::Backspace) => { self.commit_message.pop(); }
+            _ if cx.modifiers.command() => return false,
+            _ => { if let Some(input) = text { self.commit_message.push_str(input); } }
+        }
+        true
+    }
+
+    fn commit_message_ime(&mut self, ime: &gyeol::Ime) -> bool {
+        if !self.commit_message_owns_keys() {
+            return false;
+        }
+        if let gyeol::Ime::Commit(input) = ime {
+            self.commit_message.push_str(input);
+        }
+        true
     }
 
     fn set_worktree_base(&mut self, ix: usize, branch: String) {
@@ -1161,24 +1228,58 @@ impl Madi {
                     }
                 }).child(text(format!("base: {base} ⌄")).text_size(10.).text_color(p.text_dim)))
         }).h(220.).p(8.).scrollbar(p.text_dim.with_alpha(0.4));
-        let changes_title = self.selected_worktree.and_then(|i| self.worktrees.get(i)).map(|wt| format!("CHANGES · vs {}", self.pins.get(&wt.path).cloned().unwrap_or_default())).unwrap_or_else(|| "CHANGES".into());
+
         let changes = if self.selected_worktree.is_none() {
             div().grow().p(16.).child(text("Select a worktree to see its changes").text_size(12.).text_color(p.text_dim))
         } else if self.changes.is_empty() {
             div().grow().p(16.).child(text("No changes").text_size(12.).text_color(p.text_dim))
         } else {
-            uniform_list(cx, ("worktree-changes", &self.repo), self.changes.len(), ROW_H, |i| {
-                let file = &self.changes[i];
-                let selected = self.selected_change == Some(i);
+            let row = |ix: usize, stage_label: Option<&'static str>| -> El {
+                let file = &self.changes[ix];
+                let selected = self.selected_change == Some(ix);
                 let counts = format!("+{}  −{}", file.additions, file.deletions);
-                div().row().items_center().px(8.).rounded(4.)
+                let mut r = div().row().items_center().gap(6.).px(8.).rounded(4.)
                     .bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
-                    .on_click(move |s: &mut Madi, _| s.open_diff(i))
+                    .on_click(move |s: &mut Madi, _| s.open_diff(ix))
                     .child(text(file.path.clone()).text_size(12.).text_color(p.text).grow())
-                    .child(text(counts).text_size(11.).text_color(p.text_dim))
-            }).grow().p(8.).scrollbar(p.text_dim.with_alpha(0.4))
+                    .child(text(counts).text_size(11.).text_color(p.text_dim));
+                if let Some(label) = stage_label {
+                    r = r.child(div().px(6.).rounded(4.).hover_bg(p.border).on_click(move |s: &mut Madi, _| s.toggle_stage(ix)).child(text(label).text_size(12.).text_color(p.text_dim)));
+                }
+                r
+            };
+            let group = |title: &str, ixs: Vec<usize>, stage_label: Option<&'static str>| -> Option<El> {
+                if ixs.is_empty() { return None; }
+                Some(div().col().gap(1.)
+                    .child(div().px(4.).py(4.).child(text(title.to_string()).text_size(10.).text_color(p.text_dim)))
+                    .children(ixs.into_iter().map(|ix| row(ix, stage_label))))
+            };
+            let section = |name: &str| (0..self.changes.len()).filter(|&i| self.changes[i].section == name).collect::<Vec<_>>();
+            let (staged, unstaged, committed) = (section("staged"), section("unstaged"), section("committed"));
+            let staged_empty = staged.is_empty();
+
+            let base = self.selected_worktree.and_then(|i| self.worktrees.get(i)).map(|wt| self.pins.get(&wt.path).cloned().unwrap_or_default()).unwrap_or_default();
+            let message = self.commit_message.clone();
+            let focused = self.focus == Focus::CommitMessage;
+            let shown = if message.is_empty() && !focused { "Commit message".to_string() } else if focused { format!("{message}│") } else { message.clone() };
+            let commit_disabled = staged_empty || message.trim().is_empty();
+            let commit_box = div().col().gap(4.).px(4.).py(4.)
+                .child(div().min_h(44.).px(8.).py(6.).rounded(4.).border(1., if focused { p.amber } else { p.border }).bg(p.bg)
+                    .on_click(|s: &mut Madi, _| s.open_commit_message())
+                    .child(text(shown).text_size(12.).text_color(if message.is_empty() && !focused { p.text_dim } else { p.text_strong })))
+                .child(div().row().justify_end().child(
+                    div().px(10.).py(4.).rounded(4.).bg(if commit_disabled { Color::TRANSPARENT } else { p.selected }).hover_bg(p.selected)
+                        .on_click(|s: &mut Madi, _| s.do_commit())
+                        .child(text("Commit").text_size(12.).text_color(if commit_disabled { p.text_dim } else { p.text_strong })),
+                ));
+
+            let mut list = div().grow().overflow_y_scroll().p(8.).gap(2.).child(commit_box);
+            if let Some(g) = group("STAGED", staged, Some("−")) { list = list.child(g); }
+            if let Some(g) = group("CHANGES", unstaged, Some("+")) { list = list.child(g); }
+            if let Some(g) = group(&format!("VS {base}"), committed, None) { list = list.child(g); }
+            list.scrollbar(p.text_dim.with_alpha(0.4))
         };
-        div().grow().child(worktrees).child(div().h(1.).bg(p.border_soft)).child(div().px(12.).py(8.).child(text(changes_title).text_size(11.).text_color(p.text_dim))).child(div().h(1.).bg(p.border_soft)).child(changes)
+        div().grow().child(worktrees).child(div().h(1.).bg(p.border_soft)).child(changes)
     }
 
     fn sidebar(&self, cx: &Cx, p: &Palette) -> El {
@@ -1518,6 +1619,7 @@ impl View for Madi {
                 }
                 if self.project_search_key(key, text.as_deref(), cx) { return; }
                 if self.find_key(key, text.as_deref(), cx) { return; }
+                if self.commit_message_key(key, text.as_deref(), cx) { return; }
                 if self.picker_key(key, text.as_deref(), cx) {
                     return;
                 }
@@ -1556,6 +1658,7 @@ impl View for Madi {
             }
             Event::Ime(ime) if self.quick_open_ime(ime) => {}
             Event::Ime(ime) if self.find_ime(ime, cx) => {}
+            Event::Ime(ime) if self.commit_message_ime(ime) => {}
             Event::Ime(ime) if self.picker_ime(ime) => {}
             _ if !self.settings_open && self.close_confirm.is_none() => self.editor_event(event, cx),
             _ => {}
@@ -2035,6 +2138,65 @@ mod tests {
         assert!(has_text(&host, &("line 000 ".to_owned() + &long)));
         let visible = host.scene().texts().filter(|text| text.content.starts_with("line ")).count();
         assert!(visible < 80, "the diff list should only build rows near the viewport");
+    }
+
+    #[test]
+    fn staging_unstaging_and_committing_from_the_worktree_sidebar() {
+        let root = std::env::temp_dir().join("madi-test-stage-commit");
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.test"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "base"]);
+
+        // One staged change (index) and one unstaged change (working tree), on top of that commit.
+        std::fs::write(repo.join("tracked.txt"), "one\ntwo\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        std::fs::write(repo.join("untracked.txt"), "new\n").unwrap();
+
+        let config = Config::at(Some(root.join("config.json")));
+        let mut host = TestHost::new(Madi::new(Some(repo.to_string_lossy().into_owned()), config), (1000., 700.));
+        host.click_text("Worktrees");
+        host.click_text("(main)");
+        assert!(has_text(&host, "STAGED") && has_text(&host, "tracked.txt"));
+        assert!(has_text(&host, "CHANGES") && has_text(&host, "untracked.txt"));
+
+        // Stage the unstaged file via its "+" button.
+        let unstaged_ix = host.state().changes.iter().position(|f| f.section == "unstaged").unwrap();
+        host.state_mut().toggle_stage(unstaged_ix);
+        assert_eq!(host.state().changes.iter().filter(|f| f.section == "staged").count(), 2);
+        assert!(!host.state().changes.iter().any(|f| f.section == "unstaged"));
+
+        // Unstage tracked.txt back.
+        let staged_ix = host.state().changes.iter().position(|f| f.section == "staged" && f.path == "tracked.txt").unwrap();
+        host.state_mut().toggle_stage(staged_ix);
+        assert!(host.state().changes.iter().any(|f| f.section == "unstaged" && f.path == "tracked.txt"));
+
+        // Committing without a message does nothing.
+        host.state_mut().do_commit();
+        assert!(host.state().error.is_some());
+        host.state_mut().error = None;
+
+        host.state_mut().open_commit_message();
+        assert_eq!(host.state().focus, Focus::CommitMessage);
+        for c in "add untracked".chars() {
+            host.key(Key::Char(c.to_string()), Some(&c.to_string()));
+        }
+        host.set_modifiers(cmd());
+        host.key(Key::Named(NamedKey::Enter), None);
+        host.set_modifiers(Modifiers::default());
+
+        assert!(host.state().error.is_none(), "{:?}", host.state().error);
+        assert!(host.state().commit_message.is_empty());
+        assert!(!host.state().changes.iter().any(|f| f.section == "staged"), "the staged file was committed");
+        assert!(host.state().changes.iter().any(|f| f.section == "unstaged" && f.path == "tracked.txt"), "the unstaged file is untouched");
+
+        let log = std::process::Command::new("git").current_dir(&repo).args(["log", "--oneline", "-1"]).output().unwrap();
+        assert!(String::from_utf8_lossy(&log.stdout).contains("add untracked"));
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub struct FileDiff {
     pub status: String,
     pub additions: usize,
     pub deletions: usize,
-    /// "committed" (merge-base..HEAD) or "uncommitted" (HEAD..workdir, staged+unstaged)
+    /// "committed" (merge-base..HEAD), "staged" (HEAD..index) or "unstaged" (index..workdir)
     pub section: &'static str,
     pub binary: bool,
     pub lines: Vec<DiffLine>,
@@ -46,6 +46,7 @@ fn status_label(status: Delta) -> &'static str {
         Delta::Modified => "modified",
         Delta::Renamed => "renamed",
         Delta::Copied => "copied",
+        Delta::Untracked => "added",
         _ => "other",
     }
 }
@@ -67,6 +68,12 @@ fn changed_paths(diff: &Diff) -> Vec<(String, Delta)> {
 fn blob_bytes_at(tree: &Tree, repo: &Repository, path: &str) -> Option<Vec<u8>> {
     let entry = tree.get_path(Path::new(path)).ok()?;
     let blob = entry.to_object(repo).ok()?.into_blob().ok()?;
+    Some(blob.content().to_vec())
+}
+
+fn blob_bytes_in_index(index: &git2::Index, repo: &Repository, path: &str) -> Option<Vec<u8>> {
+    let entry = index.get_path(Path::new(path), 0)?;
+    let blob = repo.find_blob(entry.id).ok()?;
     Some(blob.content().to_vec())
 }
 
@@ -174,33 +181,38 @@ fn collect_committed(
         .collect()
 }
 
-fn collect_uncommitted(
-    diff: &Diff,
-    repo: &Repository,
-    head_tree: &Tree,
-    worktree_path: &str,
-) -> Vec<FileDiff> {
+fn collect_staged(diff: &Diff, repo: &Repository, head_tree: &Tree, index: &git2::Index) -> Vec<FileDiff> {
     changed_paths(diff)
         .into_iter()
         .map(|(path, status)| {
             let old_bytes = blob_bytes_at(head_tree, repo, &path).unwrap_or_default();
-            let new_bytes =
-                std::fs::read(Path::new(worktree_path).join(&path)).unwrap_or_default();
-            build_file_diff(path, status, "uncommitted", old_bytes, new_bytes)
+            let new_bytes = blob_bytes_in_index(index, repo, &path).unwrap_or_default();
+            build_file_diff(path, status, "staged", old_bytes, new_bytes)
+        })
+        .collect()
+}
+
+fn collect_unstaged(diff: &Diff, repo: &Repository, index: &git2::Index, worktree_path: &str) -> Vec<FileDiff> {
+    changed_paths(diff)
+        .into_iter()
+        .map(|(path, status)| {
+            let old_bytes = blob_bytes_in_index(index, repo, &path).unwrap_or_default();
+            let new_bytes = std::fs::read(Path::new(worktree_path).join(&path)).unwrap_or_default();
+            build_file_diff(path, status, "unstaged", old_bytes, new_bytes)
         })
         .collect()
 }
 
 /// Diffs a worktree's HEAD against the merge-base with `base_branch` (committed changes,
-/// equivalent to `git diff base_branch...HEAD`), plus HEAD against the working directory
-/// (uncommitted changes, staged and unstaged combined). Each file's content is diffed
-/// line-by-line with word-level emphasis inside changed lines, so the UI can render a
-/// side-by-side view.
+/// equivalent to `git diff base_branch...HEAD`), plus HEAD against the index (staged) and the
+/// index against the working directory (unstaged). Each file's content is diffed line-by-line
+/// with word-level emphasis inside changed lines, so the UI can render a side-by-side view.
 pub fn diff_against_base(
     worktree_path: String,
     base_branch: String,
 ) -> Result<DiffResult, String> {
     let repo = Repository::open(&worktree_path).map_err(|e| e.to_string())?;
+    let index = repo.index().map_err(|e| e.to_string())?;
 
     let head_commit = repo
         .head()
@@ -221,23 +233,58 @@ pub fn diff_against_base(
     let committed_diff = repo
         .diff_tree_to_tree(Some(&merge_base_tree), Some(&head_tree), None)
         .map_err(|e| e.to_string())?;
-    let workdir_diff = repo
-        .diff_tree_to_workdir_with_index(Some(&head_tree), None)
+    let staged_diff = repo
+        .diff_tree_to_index(Some(&head_tree), Some(&index), None)
+        .map_err(|e| e.to_string())?;
+    let mut unstaged_opts = git2::DiffOptions::new();
+    unstaged_opts.include_untracked(true).recurse_untracked_dirs(true);
+    let unstaged_diff = repo
+        .diff_index_to_workdir(Some(&index), Some(&mut unstaged_opts))
         .map_err(|e| e.to_string())?;
 
     let mut files = collect_committed(&committed_diff, &repo, &merge_base_tree, &head_tree);
-    files.extend(collect_uncommitted(
-        &workdir_diff,
-        &repo,
-        &head_tree,
-        &worktree_path,
-    ));
+    files.extend(collect_staged(&staged_diff, &repo, &head_tree, &index));
+    files.extend(collect_unstaged(&unstaged_diff, &repo, &index, &worktree_path));
 
     Ok(DiffResult {
         merge_base_oid: merge_base_oid.to_string(),
         head_oid: head_commit.id().to_string(),
         files,
     })
+}
+
+/// Adds `rel_path` to the index (or removes it, if it was deleted from the working directory).
+pub fn stage_path(worktree_path: String, rel_path: String) -> Result<(), String> {
+    let repo = Repository::open(&worktree_path).map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    if Path::new(&worktree_path).join(&rel_path).exists() {
+        index.add_path(Path::new(&rel_path)).map_err(|e| e.to_string())?;
+    } else {
+        index.remove_path(Path::new(&rel_path)).map_err(|e| e.to_string())?;
+    }
+    index.write().map_err(|e| e.to_string())
+}
+
+/// Resets `rel_path` in the index back to HEAD, undoing a stage (whether it was modified, added, or deleted).
+pub fn unstage_path(worktree_path: String, rel_path: String) -> Result<(), String> {
+    let repo = Repository::open(&worktree_path).map_err(|e| e.to_string())?;
+    let head = repo.head().and_then(|h| h.peel_to_commit()).map_err(|e| e.to_string())?;
+    repo.reset_default(Some(head.as_object()), [Path::new(&rel_path)]).map_err(|e| e.to_string())
+}
+
+/// Commits everything currently staged, as the next commit on HEAD.
+pub fn commit(worktree_path: String, message: String) -> Result<(), String> {
+    let repo = Repository::open(&worktree_path).map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
+    let head = repo.head().and_then(|h| h.peel_to_commit()).map_err(|e| e.to_string())?;
+    if tree_oid == head.tree_id() {
+        return Err("Nothing staged to commit".to_string());
+    }
+    let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+    let sig = repo.signature().map_err(|e| e.to_string())?;
+    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &[&head]).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Diffs a single commit against its first parent (or an empty tree, for a root commit), for
@@ -301,6 +348,76 @@ mod tests {
         let result = diff_against_base(repo_root, "main".to_string())
             .expect("diff_against_base should succeed");
         // HEAD is on main itself in this dev checkout, so there should be no committed diff.
-        assert!(result.files.iter().all(|f| f.section == "uncommitted"));
+        assert!(result.files.iter().all(|f| f.section != "committed"));
+    }
+
+    /// A fresh repo with one commit (`tracked.txt`) on `main`.
+    fn scratch_repo(name: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("madi-diff-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@example.com").unwrap();
+        std::fs::write(dir.join("tracked.txt"), "one\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[]).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("main", &head, true).ok();
+        repo.set_head("refs/heads/main").unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn staging_moves_a_change_from_unstaged_to_staged() {
+        let repo = scratch_repo("stage");
+        std::fs::write(Path::new(&repo).join("tracked.txt"), "one\ntwo\n").unwrap();
+
+        let before = diff_against_base(repo.clone(), "main".to_string()).unwrap();
+        assert!(before.files.iter().any(|f| f.section == "unstaged" && f.path == "tracked.txt"));
+        assert!(!before.files.iter().any(|f| f.section == "staged"));
+
+        stage_path(repo.clone(), "tracked.txt".to_string()).unwrap();
+        let staged = diff_against_base(repo.clone(), "main".to_string()).unwrap();
+        assert!(staged.files.iter().any(|f| f.section == "staged" && f.path == "tracked.txt"));
+        assert!(!staged.files.iter().any(|f| f.section == "unstaged"));
+
+        unstage_path(repo.clone(), "tracked.txt".to_string()).unwrap();
+        let after = diff_against_base(repo, "main".to_string()).unwrap();
+        assert!(after.files.iter().any(|f| f.section == "unstaged"));
+        assert!(!after.files.iter().any(|f| f.section == "staged"));
+    }
+
+    #[test]
+    fn staging_a_deleted_file_removes_it_from_the_index() {
+        let repo = scratch_repo("stage-delete");
+        std::fs::remove_file(Path::new(&repo).join("tracked.txt")).unwrap();
+        stage_path(repo.clone(), "tracked.txt".to_string()).unwrap();
+        let result = diff_against_base(repo, "main".to_string()).unwrap();
+        let file = result.files.iter().find(|f| f.section == "staged" && f.path == "tracked.txt").unwrap();
+        assert_eq!(file.status, "deleted");
+    }
+
+    #[test]
+    fn commit_writes_staged_changes_and_refuses_when_nothing_is_staged() {
+        let repo = scratch_repo("commit");
+        assert_eq!(commit(repo.clone(), "empty".to_string()), Err("Nothing staged to commit".to_string()));
+
+        std::fs::write(Path::new(&repo).join("tracked.txt"), "one\ntwo\n").unwrap();
+        stage_path(repo.clone(), "tracked.txt".to_string()).unwrap();
+        commit(repo.clone(), "second commit".to_string()).unwrap();
+
+        let after = diff_against_base(repo.clone(), "main".to_string()).unwrap();
+        assert!(!after.files.iter().any(|f| f.section == "staged" || f.section == "unstaged"), "the commit cleared the change");
+
+        let r = Repository::open(&repo).unwrap();
+        let head = r.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.message().unwrap(), "second commit");
+        assert_eq!(head.parent_count(), 1);
     }
 }
