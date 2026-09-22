@@ -9,7 +9,7 @@ name = "madi"
 path = "src/main.rs"
 
 [dependencies]
-gyeol = { path = "../../../gyeol" }
+gyeol = { git = "https://github.com/eatnows/gyeol", tag = "v0.1.0" }
 madi-project = { path = "../project" }
 madi-text = { path = "../text" }
 madi-git = { path = "../git" }
