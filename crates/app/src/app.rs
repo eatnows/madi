@@ -2027,7 +2027,8 @@ mod tests {
     fn opening_a_file_shows_its_lines_in_a_preview_tab_that_double_click_pins() {
         let (mut host, _, _) = app("open");
         host.click_text("README.md");
-        assert!(has_text(&host, "# hi"), "the file's first line");
+        // Markdown highlighting renders the heading marker and its text as separate spans.
+        assert!(has_text(&host, "hi"), "the file's first line");
         assert!(has_text(&host, "1"), "line numbers in the gutter");
         let ws = host.state().workspace().unwrap();
         assert_eq!((ws.tabs.len(), ws.tabs[0].preview), (1, true));
@@ -2291,7 +2292,8 @@ mod tests {
         assert!(has_text(&host, "Font size") && !has_text(&host, "Theme"));
         host.click_text("+");
         assert_eq!(host.state().config.font_size(), 14.);
-        let editor_text = host.scene().texts().find(|t| t.content == "# hi").unwrap();
+        // Markdown highlighting renders the heading marker and its text as separate spans.
+        let editor_text = host.scene().texts().find(|t| t.content == "hi").unwrap();
         assert_eq!(editor_text.style.size, 14., "open editors repaint at the configured size immediately");
         assert!(std::fs::read_to_string(&config_path).unwrap().contains("editor_font_size"));
         for _ in 0..30 {

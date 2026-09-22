@@ -18,7 +18,9 @@ pub struct Symbol {
 struct Grammar {
     language: tree_sitter::Language,
     highlights: &'static str,
-    tags: &'static str,
+    /// Not every grammar ships a tags query (e.g. JSON/TOML have no notion of a "definition") — no
+    /// symbols come from those, but highlighting still works.
+    tags: Option<&'static str>,
 }
 
 fn grammar_for_extension(ext: &str) -> Option<Grammar> {
@@ -26,7 +28,24 @@ fn grammar_for_extension(ext: &str) -> Option<Grammar> {
         "rs" => Some(Grammar {
             language: tree_sitter_rust::LANGUAGE.into(),
             highlights: tree_sitter_rust::HIGHLIGHTS_QUERY,
-            tags: tree_sitter_rust::TAGS_QUERY,
+            tags: Some(tree_sitter_rust::TAGS_QUERY),
+        }),
+        "toml" => Some(Grammar {
+            language: tree_sitter_toml_ng::LANGUAGE.into(),
+            highlights: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+            tags: None,
+        }),
+        "json" => Some(Grammar {
+            language: tree_sitter_json::LANGUAGE.into(),
+            highlights: tree_sitter_json::HIGHLIGHTS_QUERY,
+            tags: None,
+        }),
+        // The block grammar alone (headings, lists, code fences); inline emphasis/links need the
+        // separate inline grammar injected into text nodes, which this doesn't do yet.
+        "md" | "markdown" => Some(Grammar {
+            language: tree_sitter_md::LANGUAGE.into(),
+            highlights: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+            tags: None,
         }),
         _ => None,
     }
@@ -35,7 +54,7 @@ fn grammar_for_extension(ext: &str) -> Option<Grammar> {
 pub struct Language {
     grammar: Grammar,
     highlight_query: Query,
-    tags_query: Query,
+    tags_query: Option<Query>,
 }
 
 /// Maps a tree-sitter highlight capture name (e.g. `"function.method"`, `"punctuation.bracket"`)
@@ -51,6 +70,12 @@ fn bucket(name: &str) -> Option<&'static str> {
         Some("keyword")
     } else if name.starts_with("type") {
         Some("type")
+    } else if name.starts_with("text.title") {
+        // Markdown headings.
+        Some("keyword")
+    } else if name.starts_with("text.literal") {
+        // Markdown code blocks.
+        Some("string")
     } else {
         None
     }
@@ -102,7 +127,7 @@ impl Language {
     pub fn for_extension(ext: &str) -> Option<Self> {
         let grammar = grammar_for_extension(ext)?;
         let highlight_query = Query::new(&grammar.language, grammar.highlights).ok()?;
-        let tags_query = Query::new(&grammar.language, grammar.tags).ok()?;
+        let tags_query = grammar.tags.and_then(|tags| Query::new(&grammar.language, tags).ok());
         Some(Self { grammar, highlight_query, tags_query })
     }
 
@@ -140,12 +165,13 @@ impl Language {
     /// Every symbol definition in the file (the grammar's `definition.*` tag captures, e.g. a
     /// function or type), with its 0-based line number.
     pub fn symbols(&self, text: &str) -> Vec<Symbol> {
+        let Some(tags_query) = &self.tags_query else { return Vec::new() };
         let Some(tree) = self.parse(text) else { return Vec::new() };
         let line_starts = line_start_offsets(text);
-        let names = self.tags_query.capture_names();
+        let names = tags_query.capture_names();
         let mut out = Vec::new();
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.tags_query, tree.root_node(), text.as_bytes());
+        let mut matches = cursor.matches(tags_query, tree.root_node(), text.as_bytes());
         while let Some(m) = matches.next() {
             let Some(kind_cap) = m.captures.iter().find(|c| names[c.index as usize].starts_with("definition")) else { continue };
             let Some(name_cap) = m.captures.iter().find(|c| names[c.index as usize] == "name") else { continue };
@@ -204,5 +230,23 @@ mod tests {
         let lines = lang.highlight_lines(code);
         assert!(lines[0].iter().any(|(_, b)| *b == "comment"));
         assert!(lines[1].iter().any(|(_, b)| *b == "comment"));
+    }
+
+    #[test]
+    fn toml_and_json_highlight_but_have_no_symbols() {
+        for (ext, code) in [("toml", "# a comment\nname = \"madi\"\nversion = 1\n"), ("json", "{\"name\": \"madi\", \"version\": 1}")] {
+            let lang = Language::for_extension(ext).unwrap();
+            let lines = lang.highlight_lines(code);
+            assert!(lines.iter().flatten().any(|(_, b)| *b == "string"), "{ext}: {lines:?}");
+            assert!(lang.symbols(code).is_empty(), "{ext} has no definition/tags query");
+        }
+    }
+
+    #[test]
+    fn markdown_highlights_headings_and_code_fences() {
+        let lang = Language::for_extension("md").unwrap();
+        let code = "# Title\n\n```rust\nfn f() {}\n```\n";
+        let lines = lang.highlight_lines(code);
+        assert!(!lines[0].is_empty(), "the heading line got at least one span: {lines:?}");
     }
 }
