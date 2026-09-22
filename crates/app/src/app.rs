@@ -1439,12 +1439,13 @@ impl Madi {
             let row = |ix: usize, stage_label: Option<&'static str>| -> El {
                 let file = &self.changes[ix];
                 let selected = self.selected_change == Some(ix);
-                let counts = format!("+{}  −{}", file.additions, file.deletions);
                 let mut r = div().row().items_center().gap(6.).px(8.).rounded(4.)
                     .bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
                     .on_click(move |s: &mut Madi, _| s.open_diff(ix))
                     .child(text(file.path.clone()).text_size(12.).text_color(p.text).grow())
-                    .child(text(counts).text_size(11.).text_color(p.text_dim));
+                    .child(div().row().gap(4.)
+                        .child(text(format!("+{}", file.additions)).text_size(11.).text_color(p.add_fg))
+                        .child(text(format!("−{}", file.deletions)).text_size(11.).text_color(p.del_fg)));
                 if let Some(label) = stage_label {
                     r = r.child(div().px(6.).rounded(4.).hover_bg(p.border).on_click(move |s: &mut Madi, _| s.toggle_stage(ix)).child(text(label).text_size(12.).text_color(p.text_dim)));
                 }
@@ -1669,7 +1670,9 @@ impl Madi {
                 div().row().items_center().px(8.).rounded(4.).bg(if selected { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected)
                     .on_click(move |s: &mut Madi, _| s.select_graph_file(ix))
                     .child(text(file.path.clone()).text_size(11.).text_color(p.text).grow())
-                    .child(text(format!("+{} −{}", file.additions, file.deletions)).text_size(10.).text_color(p.text_dim))
+                    .child(div().row().gap(4.)
+                        .child(text(format!("+{}", file.additions)).text_size(10.).text_color(p.add_fg))
+                        .child(text(format!("−{}", file.deletions)).text_size(10.).text_color(p.del_fg)))
             }).grow().p(6.).scrollbar(p.text_dim.with_alpha(0.4));
             let diff = self.graph_file_selected.and_then(|ix| self.graph_files.get(ix)).map_or_else(
                 || div().grow().items_center().justify_center().child(text("Select a changed file").text_size(12.).text_color(p.text_dim)),
