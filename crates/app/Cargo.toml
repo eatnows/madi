@@ -1,6 +1,6 @@
 [package]
 name = "madi"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Madi, a native Rust code editor built on the gyeol UI toolkit"
@@ -16,6 +16,7 @@ madi-text = { path = "../text" }
 madi-git = { path = "../git" }
 madi-plugins = { path = "../plugins" }
 madi-syntax = { path = "../syntax" }
+pulldown-cmark = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 sha2 = "0.10"

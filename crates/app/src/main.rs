@@ -2,6 +2,7 @@ mod app;
 mod editor;
 mod find;
 mod icons;
+mod markdown;
 mod settings;
 mod theme;
 
