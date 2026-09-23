@@ -24,6 +24,15 @@ pub fn focus<S>(color: Color) -> Element<S> {
         .child(div().row().justify_between().child(corner(color, false, true)).child(corner(color, false, false)))
 }
 
+/// An eye: the Markdown preview toggle.
+pub fn eye<S>(color: Color) -> Element<S> {
+    div()
+        .size(14.)
+        .items_center()
+        .justify_center()
+        .child(div().w(14.).h(9.).rounded(5.).border(1.4, color).items_center().justify_center().child(div().size(4.).rounded(2.).bg(color)))
+}
+
 /// Three adjustable bars with their knobs: the settings icon.
 pub fn sliders<S>(color: Color) -> Element<S> {
     let line = |left: bool| {

@@ -1373,7 +1373,7 @@ impl Madi {
         let mut bar = bar.child(div().grow());
         if self.active_tab().is_some_and(|t| Self::is_markdown_file(&t.path)) {
             let preview = self.active_tab().is_some_and(|t| t.markdown_preview);
-            bar = bar.child(div().px(8.).py(5.).rounded(6.).bg(if preview { p.selected } else { Color::TRANSPARENT }).hover_bg(p.selected).on_click(|s: &mut Madi, _| s.toggle_markdown_preview()).child(text(if preview { "Raw" } else { "Preview" }).text_size(12.).text_color(p.text_dim)));
+            bar = bar.child(self.icon_button(p, preview, icons::eye(if preview { p.text_strong } else { p.text_dim }), |s, _| s.toggle_markdown_preview()));
         }
         let bar = bar
             .child(self.icon_button(p, self.focus_mode, icons::focus(if self.focus_mode { p.text_strong } else { p.text_dim }), |s, _| {
@@ -2422,21 +2422,18 @@ mod tests {
         host.frame();
 
         assert!(!host.state().active_tab().unwrap().markdown_preview);
-        assert!(has_text(&host, "Preview"), "the toggle button shows up for a markdown file");
-        host.click_text("Preview");
+        shortcut_shift(&mut host, "v");
         assert!(host.state().active_tab().unwrap().markdown_preview);
         host.frame();
         assert!(has_text(&host, "Title"), "the rendered heading text is on screen");
-        assert!(has_text(&host, "Raw"), "the button now offers to go back");
 
-        // A non-markdown file has no toggle at all.
+        // Toggling a non-markdown file does nothing.
         host.state_mut().open_file(Path::new(&path).join("src/main.rs"), false);
-        host.frame();
-        assert!(!has_text(&host, "Preview") && !has_text(&host, "Raw"));
+        shortcut_shift(&mut host, "v");
+        assert!(!host.state().active_tab().unwrap().markdown_preview);
 
         host.state_mut().activate_tab(0); // back to README.md, still showing the preview
-        host.frame();
-        assert!(has_text(&host, "Raw"));
+        assert!(host.state().active_tab().unwrap().markdown_preview);
         shortcut_shift(&mut host, "v");
         assert!(!host.state().active_tab().unwrap().markdown_preview, "Cmd+Shift+V toggles it back off");
     }
